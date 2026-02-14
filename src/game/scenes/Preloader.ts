@@ -42,6 +42,7 @@ export class Preloader extends Scene
         this.load.audio('stopping_sfx', 'sounds/stopping.mp3');
         this.load.audio('nitro_sfx', 'sounds/nitro.mp3');
         this.load.audio('theme1', 'music/music-1.mp3');
+        this.load.audio('theme2', 'music/music-2.mp3');
 
         // Load 48 car rotation frames (000 = facing right, clockwise)
         for (let i = 0; i < 48; i++) {

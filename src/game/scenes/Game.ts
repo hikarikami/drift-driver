@@ -6,6 +6,7 @@ export class Game extends Scene {
     private width!: number;
     private height!: number;
 
+
     // Car (physics-driven)
     private headSprite!: Phaser.GameObjects.Arc;
     private carSprite!: Phaser.GameObjects.Image;
@@ -55,8 +56,8 @@ export class Game extends Scene {
     // Tire mark emitters
     private tireEmitterLeft!: Phaser.GameObjects.Particles.ParticleEmitter;
     private tireEmitterRight!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private readonly rearWheelX = -10;
-    private readonly wheelSpreadY = 7;
+    private readonly rearWheelX = -4;
+    private readonly wheelSpreadY = 10;
     private tireMarkIntensity = 0;
 
     // Pickup
@@ -88,6 +89,10 @@ export class Game extends Scene {
     private finalScoreText?: Phaser.GameObjects.Text;
     private playAgainBtn?: Phaser.GameObjects.Text;
 
+    
+    //music volume
+    private musicVolume = 0.35;
+
     // Sound
     private soundManager!: SoundManager;
     private currentSpeed = 0;
@@ -97,6 +102,7 @@ export class Game extends Scene {
     private music!: Phaser.Sound.BaseSound;
     private musicMuted = false;
 
+    
     // UI
     private scoreText!: Phaser.GameObjects.Text;
     private gameOverText!: Phaser.GameObjects.Text;
@@ -191,8 +197,8 @@ export class Game extends Scene {
     }
 
     create() {
-        this.music = this.sound.add('theme1');
-        this.music.play({ loop: true, volume: 0.12 });
+        this.music = this.sound.add('theme2');
+        this.music.play({ loop: true, volume: this.musicVolume });
         this.width = this.scale.width;
         this.height = this.scale.height;
 
@@ -265,13 +271,13 @@ export class Game extends Scene {
         const brakeSmokeConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
             color: [0xcccccc, 0xaaaaaa, 0x888888, 0x666666],
             colorEase: 'linear',
-            lifespan: { min: 2500, max: 4000 },
-            scale: { start: 0.6, end: 1.4, ease: 'sine.out' },
-            speed: { min: 0, max: 4 },
-            alpha: { start: 0.18, end: 0 },
+            lifespan: { min: 1600, max: 6000 },
+            scale: { start: 0.4, end: 1.6, ease: 'sine.out' },
+            speed: { min: 0, max: 3.5 },
+            alpha: { start: 0.09, end: .04 },
             gravityY: -12,
             blendMode: 'NORMAL',
-            emitting: false,
+            emitting: true,
         };
 
         this.brakeSmokeEmitterLeft = this.add.particles(0, 0, 'flame_dot', { ...brakeSmokeConfig });
@@ -493,7 +499,7 @@ export class Game extends Scene {
                 (this.music as Phaser.Sound.WebAudioSound).setVolume(0);
                 musicBtn.setText('\u266B Music: OFF');
             } else {
-                (this.music as Phaser.Sound.WebAudioSound).setVolume(0.12);
+                (this.music as Phaser.Sound.WebAudioSound).setVolume(this.musicVolume);
                 musicBtn.setText('\u266B Music: ON');
             }
         });
@@ -586,7 +592,7 @@ export class Game extends Scene {
         // Restore music volume after game-over fade
         if (!this.musicMuted) {
             this.tweens.killTweensOf(this.music);
-            (this.music as Phaser.Sound.WebAudioSound).setVolume(0.12);
+            (this.music as Phaser.Sound.WebAudioSound).setVolume(this.musicVolume);
         }
     }
 
@@ -863,45 +869,53 @@ export class Game extends Scene {
             this.tireEmitterRight.emitParticleAt(rightX, rightY, 1);
         }
 
-        // --- Boost flame + smoke ---
-        if (this.boostIntensity > 0.05) {
-            const exhaustDist = 14;
-            const rearX = hx - Math.cos(this.headAngle) * exhaustDist;
-            const rearY = hy - Math.sin(this.headAngle) * exhaustDist;
+       // --- Boost flame/smoke (single exhaust) ---
+if (this.boostIntensity > 0.01) {
+    const vx = body.velocity.x;
+    const vy = body.velocity.y;
+    const velAngle = Math.atan2(vy, vx);
+    const exhaustAngleDeg = (velAngle * 180 / Math.PI + 180) % 360;
 
-            const exhaustAngleDeg = ((this.headAngle + Math.PI) * 180 / Math.PI);
+    // Rotate the exhaust offset based on car's visual angle
+    const exhaustLocalX = this.rearWheelX - 2;  // Behind the car
+    const exhaustLocalY = 0;  // Centered
+    const exhaustX = hx + Math.cos(this.headAngle) * exhaustLocalX - Math.sin(this.headAngle) * exhaustLocalY;
+    const exhaustY = hy + Math.sin(this.headAngle) * exhaustLocalX + Math.cos(this.headAngle) * exhaustLocalY;
 
-            this.boostFlameEmitter.particleAngle = { min: exhaustAngleDeg - 15, max: exhaustAngleDeg + 15 };
-            const flameCount = Math.ceil(this.boostIntensity * 3);
-            this.boostFlameEmitter.emitParticleAt(rearX, rearY, flameCount);
+    this.boostFlameEmitter.particleAngle = { min: exhaustAngleDeg - 8, max: exhaustAngleDeg + 8 };
+    const flameCount = Math.ceil(this.boostIntensity * 3);
+    this.boostFlameEmitter.emitParticleAt(exhaustX, exhaustY, flameCount);
 
-            const smokeDist = 6;
-            const smokeX = hx - Math.cos(this.headAngle) * smokeDist;
-            const smokeY = hy - Math.sin(this.headAngle) * smokeDist;
-            this.boostSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 25, max: exhaustAngleDeg + 25 };
-            const smokeCount = Math.ceil(this.boostIntensity * 5.5);
-            this.boostSmokeEmitter.emitParticleAt(smokeX, smokeY, smokeCount);
-        }
+    const smokeX = exhaustX;
+    const smokeY = exhaustY;
+    this.boostSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 25, max: exhaustAngleDeg + 25 };
+    const smokeCount = Math.ceil(this.boostIntensity * 5.5);
+    this.boostSmokeEmitter.emitParticleAt(smokeX, smokeY, smokeCount);
+}
 
-        // --- Handbrake smoke (two rear tyres) ---
-        if (brakeInput && speed > 30) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
-            const velAngle = Math.atan2(vy, vx);
-            const perpAngle = velAngle + Math.PI / 2;
-            const spread = this.wheelSpreadY;
-            const behindDist = Math.abs(this.rearWheelX);
-            const baseX = hx - Math.cos(velAngle) * behindDist;
-            const baseY = hy - Math.sin(velAngle) * behindDist;
-            const leftX = baseX + Math.cos(perpAngle) * spread;
-            const leftY = baseY + Math.sin(perpAngle) * spread;
-            const rightX = baseX - Math.cos(perpAngle) * spread;
-            const rightY = baseY - Math.sin(perpAngle) * spread;
+     // --- Handbrake smoke (two rear tyres) ---
+if (brakeInput && speed > 30) {
+    const vx = body.velocity.x;
+    const vy = body.velocity.y;
+    const velAngle = Math.atan2(vy, vx);
+    
+    // Rotate wheel positions based on car's visual angle
+    const perpAngle = this.headAngle + Math.PI / 2;
+    const behindDist = Math.abs(this.rearWheelX);
+    const spread = this.wheelSpreadY;
+    
+    const baseX = hx + Math.cos(this.headAngle) * this.rearWheelX;
+    const baseY = hy + Math.sin(this.headAngle) * this.rearWheelX;
+    
+    const leftX = baseX + Math.cos(perpAngle) * spread;
+    const leftY = baseY + Math.sin(perpAngle) * spread;
+    const rightX = baseX - Math.cos(perpAngle) * spread;
+    const rightY = baseY - Math.sin(perpAngle) * spread;
 
-            const count = Math.ceil(Math.min(speed / 100, 1) * 3);
-            this.brakeSmokeEmitterLeft.emitParticleAt(leftX, leftY, count);
-            this.brakeSmokeEmitterRight.emitParticleAt(rightX, rightY, count);
-        }
+    const count = Math.ceil(Math.min(speed / 100, 1) * 2.5);
+    this.brakeSmokeEmitterLeft.emitParticleAt(leftX, leftY, count);
+    this.brakeSmokeEmitterRight.emitParticleAt(rightX, rightY, count);
+}
 
         // --- Pickup ---
         const pdx = hx - this.pickupX;
