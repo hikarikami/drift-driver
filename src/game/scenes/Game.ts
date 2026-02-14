@@ -91,8 +91,7 @@ export class Game extends Scene {
     private currentSpeed = 0;
     private isAccelerating = false;
     private accelStopTimer = 0;
-    private readonly engineFadeDelay = 0.3;
-    private readonly stoppingFadeDelay = 0.56;
+    private readonly engineFadeDelay = 0.165;
     private music!: Phaser.Sound.BaseSound;
     private musicMuted = false;
 
@@ -601,7 +600,7 @@ export class Game extends Scene {
         // --- Game-over coasting: car rolls to a stop, sprite keeps updating ---
         if (this.gameOver) {
             const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-            const coastDamp = 1 - 2.5 * dt;
+            const coastDamp = 1 - 1.5 * dt;
             body.velocity.x *= Math.max(coastDamp, 0);
             body.velocity.y *= Math.max(coastDamp, 0);
             if (body.speed < 2) { body.setVelocity(0, 0); body.setAcceleration(0, 0); }
@@ -899,7 +898,7 @@ export class Game extends Scene {
             }
         }
 
-        const stoppingTarget = (!this.isAccelerating && this.accelStopTimer >= this.stoppingFadeDelay) ? 1 : 0;
+        const stoppingTarget = brakeInput ? 1 : 0;
         this.soundManager.setLayerTarget('stopping', stoppingTarget);
         this.soundManager.update(dt);
     }
@@ -944,11 +943,11 @@ export class Game extends Scene {
         this.boostFlameEmitter.stop();
         this.boostSmokeEmitter.stop();
 
-        // Fade music volume down
+        // Fade music to ~10% of original
         if (!this.musicMuted) {
             this.tweens.add({
                 targets: this.music,
-                volume: 0.04,
+                volume: 0.012,
                 duration: 1500,
                 ease: 'Quad.easeOut',
             });
@@ -961,8 +960,25 @@ export class Game extends Scene {
 
         this.timerText.setVisible(false);
 
+        // Delay the game-over UI by 1s, then animate in
+        this.time.delayedCall(1000, () => {
+            this.showGameOverUI();
+        });
+    }
+
+    private showGameOverUI() {
         this.gameOverText.setText('GAME OVER');
+        this.gameOverText.setAlpha(0);
+        this.gameOverText.setScale(0.5);
         this.gameOverText.setVisible(true);
+
+        this.tweens.add({
+            targets: this.gameOverText,
+            alpha: 1,
+            scale: 1,
+            duration: 500,
+            ease: 'Back.easeOut',
+        });
 
         this.finalScoreText = this.add.text(this.width / 2, this.height / 2 + 10, `Final Score: ${this.score}`, {
             fontFamily: 'Arial Black',
@@ -971,7 +987,16 @@ export class Game extends Scene {
             stroke: '#000000',
             strokeThickness: 5,
             align: 'center',
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(10);
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+
+        this.tweens.add({
+            targets: this.finalScoreText,
+            alpha: 1,
+            y: this.height / 2 + 10,
+            duration: 400,
+            delay: 300,
+            ease: 'Quad.easeOut',
+        });
 
         this.playAgainBtn = this.add.text(this.width / 2, this.height / 2 + 100, 'Play Again', {
             fontFamily: 'Arial Black',
@@ -981,7 +1006,15 @@ export class Game extends Scene {
             padding: { x: 24, y: 12 },
             align: 'center',
         }).setOrigin(0.5).setScrollFactor(0).setDepth(10)
-          .setInteractive({ useHandCursor: true });
+          .setInteractive({ useHandCursor: true }).setAlpha(0);
+
+        this.tweens.add({
+            targets: this.playAgainBtn,
+            alpha: 1,
+            duration: 400,
+            delay: 600,
+            ease: 'Quad.easeOut',
+        });
 
         this.playAgainBtn.on('pointerover', () => this.playAgainBtn?.setStyle({ backgroundColor: '#44cc66' }));
         this.playAgainBtn.on('pointerout', () => this.playAgainBtn?.setStyle({ backgroundColor: '#33aa55' }));
