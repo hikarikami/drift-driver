@@ -72,7 +72,7 @@ export class Game extends Scene {
     private timeRemaining = 60;
     private timerText!: Phaser.GameObjects.Text;
     private readonly startTime = 60;
-    private readonly pickupTimeBonus = 3;
+    private readonly pickupTimeBonus = 2;
 
     // Debug modal
     private debugModalContainer!: Phaser.GameObjects.Container;
@@ -277,9 +277,11 @@ export class Game extends Scene {
 
         // UI — Score
         this.scoreText = this.add.text(16, 16, 'Score: 0', {
-            fontFamily: 'Arial',
+            fontFamily: 'Arial Black',
             fontSize: 24,
             color: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 4,
         }).setScrollFactor(0).setDepth(10);
 
         // Boost gauge bar
@@ -822,6 +824,7 @@ export class Game extends Scene {
             this.score += 10;
             this.timeRemaining = Math.min(this.timeRemaining + this.pickupTimeBonus, 99);
             this.boostFuel = Math.min(this.boostMax, this.boostFuel + this.boostRefillAmount);
+            this.showTimeBonusPopup(this.pickupX, this.pickupY);
             this.spawnPickup();
         }
 
@@ -881,6 +884,37 @@ export class Game extends Scene {
         const stoppingTarget = (!this.isAccelerating && this.accelStopTimer >= this.stoppingFadeDelay) ? 1 : 0;
         this.soundManager.setLayerTarget('stopping', stoppingTarget);
         this.soundManager.update(dt);
+    }
+
+    private showTimeBonusPopup(x: number, y: number) {
+        const popup = this.add.text(x, y, `+${this.pickupTimeBonus}s`, {
+            fontFamily: 'Arial Black',
+            fontSize: 28,
+            color: '#44ff88',
+            stroke: '#000000',
+            strokeThickness: 4,
+            align: 'center',
+        }).setOrigin(0.5).setDepth(15).setAlpha(0).setScale(0.3);
+
+        this.tweens.add({
+            targets: popup,
+            alpha: 1,
+            scale: 1.2,
+            y: y - 40,
+            duration: 300,
+            ease: 'Back.easeOut',
+            onComplete: () => {
+                this.tweens.add({
+                    targets: popup,
+                    alpha: 0,
+                    scale: 0.6,
+                    y: y - 70,
+                    duration: 400,
+                    ease: 'Quad.easeIn',
+                    onComplete: () => popup.destroy(),
+                });
+            },
+        });
     }
 
     private endGame() {
