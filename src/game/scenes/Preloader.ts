@@ -29,10 +29,23 @@ export class Preloader extends Scene
 
     preload ()
     {
-        //  Load the assets for the game - Replace with your own assets
+        //  Load the assets for the game
         this.load.setPath('assets');
 
         this.load.image('logo', 'logo.png');
+        this.load.image('crate', 'score/crate.png');
+        this.load.image('iso_tileset', 'scenery/tilemap/tileset.png');
+
+        // Sounds
+        this.load.audio('screech_sfx', 'sounds/screech.mp3');
+        this.load.audio('engine_sfx', 'sounds/general.mp3');
+        this.load.audio('theme1', 'music/music-1.mp3');
+
+        // Load 48 car rotation frames (000 = facing right, clockwise)
+        for (let i = 0; i < 48; i++) {
+            const num = String(i).padStart(3, '0');
+            this.load.image(`car_${num}`, `car/Red_CIVIC_CLEAN_All_${num}.png`);
+        }
     }
 
     create ()
