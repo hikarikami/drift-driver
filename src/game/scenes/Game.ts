@@ -72,7 +72,7 @@ export class Game extends Scene {
     private timeRemaining = 60;
     private timerText!: Phaser.GameObjects.Text;
     private readonly startTime = 60;
-    private readonly pickupTimeBonus = 5;
+    private readonly pickupTimeBonus = 3;
 
     // Debug modal
     private debugModalContainer!: Phaser.GameObjects.Container;
@@ -347,11 +347,7 @@ export class Game extends Scene {
 
         this.buildDebugModal();
 
-        this.debugText = this.add.text(this.width - 16, 50, '', {
-            fontFamily: 'Arial',
-            fontSize: 14,
-            color: '#888888',
-        }).setOrigin(1, 0).setScrollFactor(0).setDepth(20);
+
 
         // --- Sound setup ---
         this.soundManager = new SoundManager(this);
@@ -384,7 +380,7 @@ export class Game extends Scene {
 
     private buildDebugModal() {
         const modalW = 280;
-        const modalH = 340;
+        const modalH = 370;
         const mx = (this.width - modalW) / 2;
         const my = (this.height - modalH) / 2;
 
@@ -495,6 +491,15 @@ export class Game extends Scene {
             }
         });
         this.debugModalContainer.add(sfxBtn);
+
+        cy += rowH + 4;
+
+        this.debugText = this.add.text(this.width / 2, cy, '', {
+            fontFamily: 'Arial',
+            fontSize: 14,
+            color: '#888888',
+        }).setOrigin(0.5, 0);
+        this.debugModalContainer.add(this.debugText);
     }
 
     private refreshDebugLabels() {
@@ -831,11 +836,12 @@ export class Game extends Scene {
         this.carShadow.setTexture(frameKey);
         this.carShadow.setPosition(hx + 1.5, hy + 2.5);
 
-        // Score & debug
         this.scoreText.setText(`Score: ${this.score}`);
-        this.debugText.setText(
-            `Spd: ${Math.round(speed)}  Thrust: ${this.forwardThrust}`
-        );
+        if (this.debugText) {
+            this.debugText.setText(
+                `Spd: ${Math.round(speed)}  Thrust: ${this.forwardThrust}`
+            );
+        }
 
         // --- Update boost gauge bar (smoothed) ---
         const barX = 16;
