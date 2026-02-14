@@ -697,9 +697,10 @@ export class Game extends Scene {
         }
 
         // --- Sound layers ---
-        this.soundManager.setLayerTarget('screech', this.tireMarkIntensity);
+        const brakeScreech = brakeInput ? 0.15 : 0;
+        this.soundManager.setLayerTarget('screech', Math.max(this.tireMarkIntensity, brakeScreech));
         this.soundManager.setLayerTarget('stopping', brakeInput ? 1 : 0);
-        this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0.15 : 1);
+        this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0.3 : 1);
         this.soundManager.update(dt);
     }
 }
