@@ -72,9 +72,29 @@ export class SoundManager {
     private scene: Scene;
     private layers: Map<string, Layer> = new Map();
     private crossfadeLayers: Map<string, CrossfadeLayer> = new Map();
+    private _muted = false;
 
     constructor(scene: Scene) {
         this.scene = scene;
+    }
+
+    get muted() {
+        return this._muted;
+    }
+
+    set muted(value: boolean) {
+        this._muted = value;
+        if (value) {
+            for (const layer of this.layers.values()) {
+                if (layer.playing) {
+                    (layer.sound as Phaser.Sound.WebAudioSound).setVolume(0);
+                }
+            }
+            for (const cf of this.crossfadeLayers.values()) {
+                cf.a.sound.setVolume(0);
+                cf.b.sound.setVolume(0);
+            }
+        }
     }
 
     // ── Standard layer API ──────────────────────────────────────
@@ -197,7 +217,7 @@ export class SoundManager {
             }
 
             if (layer.playing) {
-                (layer.sound as Phaser.Sound.WebAudioSound).setVolume(layer.currentVolume);
+                (layer.sound as Phaser.Sound.WebAudioSound).setVolume(this._muted ? 0 : layer.currentVolume);
                 
                 // Track playback time for non-looping sounds with maxDuration
                 if (!layer.config.loop && layer.config.maxDuration !== undefined) {
@@ -316,7 +336,7 @@ export class SoundManager {
             }
         }
 
-        inst.sound.setVolume(inst.volume * scale);
+        inst.sound.setVolume(this._muted ? 0 : inst.volume * scale);
     }
 
     // ── Cleanup ─────────────────────────────────────────────────
