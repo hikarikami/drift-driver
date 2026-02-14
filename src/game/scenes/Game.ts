@@ -101,6 +101,7 @@ export class Game extends Scene {
     private readonly engineFadeDelay = 0.165;
     private music!: Phaser.Sound.BaseSound;
     private musicMuted = false;
+    private collectSound!: Phaser.Sound.BaseSound;
 
     
     // UI
@@ -198,6 +199,7 @@ export class Game extends Scene {
 
     create() {
         this.music = this.sound.add('theme2');
+        this.collectSound = this.sound.add('collect-1');
         this.music.play({ loop: true, volume: this.musicVolume });
         this.width = this.scale.width;
         this.height = this.scale.height;
@@ -877,7 +879,7 @@ if (this.boostIntensity > 0.01) {
     const exhaustAngleDeg = (velAngle * 180 / Math.PI + 180) % 360;
 
     // Rotate the exhaust offset based on car's visual angle
-    const exhaustLocalX = this.rearWheelX - 2;  // Behind the car
+    const exhaustLocalX = this.rearWheelX - 15;  // Behind the car
     const exhaustLocalY = 0;  // Centered
     const exhaustX = hx + Math.cos(this.headAngle) * exhaustLocalX - Math.sin(this.headAngle) * exhaustLocalY;
     const exhaustY = hy + Math.sin(this.headAngle) * exhaustLocalX + Math.cos(this.headAngle) * exhaustLocalY;
@@ -926,6 +928,7 @@ if (brakeInput && speed > 30) {
             this.boostFuel = Math.min(this.boostMax, this.boostFuel + this.boostRefillAmount);
             this.showTimeBonusPopup(this.pickupX, this.pickupY);
             this.spawnPickup();
+            this.collectSound.play({ volume: .9 });
         }
 
         // --- Update car sprite frame ---

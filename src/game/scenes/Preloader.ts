@@ -41,6 +41,7 @@ export class Preloader extends Scene
         this.load.audio('engine_sfx', 'sounds/general.mp3');
         this.load.audio('stopping_sfx', 'sounds/stopping.mp3');
         this.load.audio('nitro_sfx', 'sounds/nitro.mp3');
+        this.load.audio('collect-1', 'sounds/collect-1.mp3');
         this.load.audio('theme1', 'music/music-1.mp3');
         this.load.audio('theme2', 'music/music-2.mp3');
 
