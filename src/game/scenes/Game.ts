@@ -99,7 +99,6 @@ export class Game extends Scene {
     // UI
     private scoreText!: Phaser.GameObjects.Text;
     private gameOverText!: Phaser.GameObjects.Text;
-    private restartHintText!: Phaser.GameObjects.Text;
     private debugText!: Phaser.GameObjects.Text;
 
     constructor() {
@@ -310,17 +309,10 @@ export class Game extends Scene {
 
         this.gameOverText = this.add.text(this.width / 2, this.height / 2 - 60, '', {
             fontFamily: 'Arial Black',
-            fontSize: 64,
+            fontSize: 52,
             color: '#ff3366',
             stroke: '#000000',
             strokeThickness: 6,
-            align: 'center',
-        }).setOrigin(0.5).setVisible(false).setScrollFactor(0).setDepth(10);
-
-        this.restartHintText = this.add.text(this.width / 2, this.height / 2 + 30, '', {
-            fontFamily: 'Arial',
-            fontSize: 24,
-            color: '#aaaaaa',
             align: 'center',
         }).setOrigin(0.5).setVisible(false).setScrollFactor(0).setDepth(10);
 
@@ -542,10 +534,15 @@ export class Game extends Scene {
 
         this.spawnPickup();
         this.gameOverText.setVisible(false);
-        this.restartHintText.setVisible(false);
         if (this.timerText) this.timerText.setVisible(true);
         if (this.finalScoreText) { this.finalScoreText.destroy(); this.finalScoreText = undefined; }
         if (this.playAgainBtn) { this.playAgainBtn.destroy(); this.playAgainBtn = undefined; }
+
+        // Restore music volume after game-over fade
+        if (!this.musicMuted) {
+            this.tweens.killTweensOf(this.music);
+            (this.music as Phaser.Sound.WebAudioSound).setVolume(0.12);
+        }
     }
 
     private spawnPickup() {
@@ -599,9 +596,30 @@ export class Game extends Scene {
     }
 
     update(_time: number, delta: number) {
-        if (this.gameOver) return;
-
         const dt = delta / 1000;
+
+        // --- Game-over coasting: car rolls to a stop, sprite keeps updating ---
+        if (this.gameOver) {
+            const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+            const coastDamp = 1 - 2.5 * dt;
+            body.velocity.x *= Math.max(coastDamp, 0);
+            body.velocity.y *= Math.max(coastDamp, 0);
+            if (body.speed < 2) { body.setVelocity(0, 0); body.setAcceleration(0, 0); }
+
+            this.physics.world.wrap(this.headSprite, 0);
+            const hx = this.headSprite.x;
+            const hy = this.headSprite.y;
+            let angleDeg = (this.headAngle * 180 / Math.PI) % 360;
+            if (angleDeg < 0) angleDeg += 360;
+            const frameIndex = Math.round(angleDeg / (360 / this.totalCarFrames)) % this.totalCarFrames;
+            const frameKey = `car_${String(frameIndex).padStart(3, '0')}`;
+            this.carSprite.setTexture(frameKey);
+            this.carSprite.setPosition(hx, hy);
+            this.carShadow.setTexture(frameKey);
+            this.carShadow.setPosition(hx + 1.5, hy + 2.5);
+            this.soundManager.update(dt);
+            return;
+        }
 
         // --- Countdown timer ---
         this.timeRemaining -= dt;
@@ -921,28 +939,41 @@ export class Game extends Scene {
         this.gameOver = true;
 
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setVelocity(0, 0);
         body.setAcceleration(0, 0);
 
-        this.soundManager.stopAll();
         this.boostFlameEmitter.stop();
         this.boostSmokeEmitter.stop();
+
+        // Fade music volume down
+        if (!this.musicMuted) {
+            this.tweens.add({
+                targets: this.music,
+                volume: 0.04,
+                duration: 1500,
+                ease: 'Quad.easeOut',
+            });
+        }
+
+        // Fade SFX layers out gently
+        this.soundManager.setLayerTarget('screech', 0);
+        this.soundManager.setCrossfadeLayerScale('engine', 0);
+        this.soundManager.setLayerTarget('stopping', 0);
 
         this.timerText.setVisible(false);
 
         this.gameOverText.setText('GAME OVER');
         this.gameOverText.setVisible(true);
 
-        this.finalScoreText = this.add.text(this.width / 2, this.height / 2, `Final Score: ${this.score}`, {
-            fontFamily: 'Arial',
-            fontSize: 32,
+        this.finalScoreText = this.add.text(this.width / 2, this.height / 2 + 10, `Final Score: ${this.score}`, {
+            fontFamily: 'Arial Black',
+            fontSize: 48,
             color: '#ffffff',
             stroke: '#000000',
-            strokeThickness: 4,
+            strokeThickness: 5,
             align: 'center',
         }).setOrigin(0.5).setScrollFactor(0).setDepth(10);
 
-        this.playAgainBtn = this.add.text(this.width / 2, this.height / 2 + 60, 'Play Again', {
+        this.playAgainBtn = this.add.text(this.width / 2, this.height / 2 + 100, 'Play Again', {
             fontFamily: 'Arial Black',
             fontSize: 28,
             color: '#ffffff',
@@ -957,9 +988,5 @@ export class Game extends Scene {
         this.playAgainBtn.on('pointerdown', () => {
             this.tryRestart();
         });
-
-        this.restartHintText.setText('or press R to restart');
-        this.restartHintText.setY(this.height / 2 + 110);
-        this.restartHintText.setVisible(true);
     }
 }
