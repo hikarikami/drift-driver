@@ -68,6 +68,8 @@ export class Game extends Scene {
 
     // Sound
     private soundManager!: SoundManager;
+    private music!: Phaser.Sound.BaseSound;
+    private musicMuted = false;
 
     // UI
     private scoreText!: Phaser.GameObjects.Text;
@@ -189,9 +191,8 @@ export class Game extends Scene {
     }
 
     create() {
-        const music = this.sound.add('theme1');
-        music.setVolume(0.12)
-        music.play({ loop: true });
+        this.music = this.sound.add('theme1');
+        this.music.play({ loop: true, volume: 0.12 });
         this.width = this.scale.width;
         this.height = this.scale.height;
 
@@ -363,6 +364,28 @@ export class Game extends Scene {
         makeBtn('Drag -', () => { this.drag = Math.max(this.drag - 20, 0); });
         makeBtn('Max Spd +', () => { this.maxSpd = Math.min(this.maxSpd + 30, 600); });
         makeBtn('Max Spd -', () => { this.maxSpd = Math.max(this.maxSpd - 30, 80); });
+
+        btnY += 10;
+
+        const musicBtn = makeBtn('\u266B Music: ON', () => {
+            this.musicMuted = !this.musicMuted;
+            if (this.musicMuted) {
+                (this.music as Phaser.Sound.WebAudioSound).setVolume(0);
+                musicBtn.setText('\u266B Music: OFF');
+            } else {
+                (this.music as Phaser.Sound.WebAudioSound).setVolume(0.12);
+                musicBtn.setText('\u266B Music: ON');
+            }
+        });
+
+        const sfxBtn = makeBtn('\u{1F50A} SFX: ON', () => {
+            this.soundManager.muted = !this.soundManager.muted;
+            if (this.soundManager.muted) {
+                sfxBtn.setText('\u{1F507} SFX: OFF');
+            } else {
+                sfxBtn.setText('\u{1F50A} SFX: ON');
+            }
+        });
 
         this.debugText = this.add.text(btnX, btnY, '', {
             fontFamily: 'Arial',
