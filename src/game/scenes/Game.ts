@@ -797,6 +797,9 @@ export class Game extends Scene {
         if (absDrift > tireThreshold && speed > 90) {
             targetTireIntensity = Math.min((absDrift - tireThreshold) / (tireFull - tireThreshold), 1);
         }
+        if (brakeInput && speed > 30) {
+            targetTireIntensity = Math.max(targetTireIntensity, Math.min(speed / 150, 1));
+        }
 
         const tireRampSpeed = targetTireIntensity > this.tireMarkIntensity ? 2.4 : 6.5;
         const tireLerp = 1 - Math.exp(-tireRampSpeed * dt);
