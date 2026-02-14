@@ -40,7 +40,8 @@ export class Game extends Scene {
     private boostBarFill!: Phaser.GameObjects.Graphics;
     private boostFlameEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
     private boostSmokeEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private brakeSmokeEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
+    private brakeSmokeEmitterLeft!: Phaser.GameObjects.Particles.ParticleEmitter;
+    private brakeSmokeEmitterRight!: Phaser.GameObjects.Particles.ParticleEmitter;
 
     // Steering
     private readonly targetAngularVel = 4.0;
@@ -260,18 +261,25 @@ export class Game extends Scene {
         });
         this.boostSmokeEmitter.setDepth(3);
 
-        // Handbrake smoke emitter — thick puffs from the rear
-        this.brakeSmokeEmitter = this.add.particles(0, 0, 'flame_dot', {
-            color: [0x999999, 0x777777, 0x555555],
+        // Handbrake smoke emitters — one per rear tyre, rising lingering smoke
+        const brakeSmokeConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
+            color: [0xcccccc, 0xaaaaaa, 0x888888, 0x666666],
             colorEase: 'linear',
-            lifespan: { min: 500, max: 900 },
-            scale: { start: 0.25, end: 0.7, ease: 'sine.out' },
-            speed: { min: 20, max: 50 },
-            alpha: { start: 0.3, end: 0 },
+            lifespan: { min: 2500, max: 4000 },
+            scale: { start: 0.3, end: 1.2, ease: 'sine.out' },
+            speed: { min: 8, max: 25 },
+            angle: { min: 250, max: 290 },
+            alpha: { start: 0.18, end: 0 },
+            gravityY: -18,
             blendMode: 'NORMAL',
             emitting: false,
-        });
-        this.brakeSmokeEmitter.setDepth(3);
+        };
+
+        this.brakeSmokeEmitterLeft = this.add.particles(0, 0, 'flame_dot', { ...brakeSmokeConfig });
+        this.brakeSmokeEmitterLeft.setDepth(3);
+
+        this.brakeSmokeEmitterRight = this.add.particles(0, 0, 'flame_dot', { ...brakeSmokeConfig });
+        this.brakeSmokeEmitterRight.setDepth(3);
 
         this.carShadow = this.add.image(0, 0, 'car_000').setDepth(3);
         this.carShadow.setTint(0x000000);
@@ -567,7 +575,8 @@ export class Game extends Scene {
         this.tireEmitterRight.killAll();
         this.boostFlameEmitter.killAll();
         this.boostSmokeEmitter.killAll();
-        this.brakeSmokeEmitter.killAll();
+        this.brakeSmokeEmitterLeft.killAll();
+        this.brakeSmokeEmitterRight.killAll();
 
         this.spawnPickup();
         this.gameOverText.setVisible(false);
@@ -875,15 +884,24 @@ export class Game extends Scene {
             this.boostSmokeEmitter.emitParticleAt(smokeX, smokeY, smokeCount);
         }
 
-        // --- Handbrake smoke ---
+        // --- Handbrake smoke (two rear tyres) ---
         if (brakeInput && speed > 30) {
-            const exhaustDist = 14;
-            const rearX = hx - Math.cos(this.headAngle) * exhaustDist;
-            const rearY = hy - Math.sin(this.headAngle) * exhaustDist;
-            const exhaustAngleDeg = ((this.headAngle + Math.PI) * 180 / Math.PI);
-            this.brakeSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 35, max: exhaustAngleDeg + 35 };
-            const count = Math.ceil(Math.min(speed / 80, 1) * 4);
-            this.brakeSmokeEmitter.emitParticleAt(rearX, rearY, count);
+            const vx = body.velocity.x;
+            const vy = body.velocity.y;
+            const velAngle = Math.atan2(vy, vx);
+            const perpAngle = velAngle + Math.PI / 2;
+            const spread = this.wheelSpreadY;
+            const behindDist = Math.abs(this.rearWheelX);
+            const baseX = hx - Math.cos(velAngle) * behindDist;
+            const baseY = hy - Math.sin(velAngle) * behindDist;
+            const leftX = baseX + Math.cos(perpAngle) * spread;
+            const leftY = baseY + Math.sin(perpAngle) * spread;
+            const rightX = baseX - Math.cos(perpAngle) * spread;
+            const rightY = baseY - Math.sin(perpAngle) * spread;
+
+            const count = Math.ceil(Math.min(speed / 100, 1) * 3);
+            this.brakeSmokeEmitterLeft.emitParticleAt(leftX, leftY, count);
+            this.brakeSmokeEmitterRight.emitParticleAt(rightX, rightY, count);
         }
 
         // --- Pickup ---
@@ -997,7 +1015,8 @@ export class Game extends Scene {
 
         this.boostFlameEmitter.stop();
         this.boostSmokeEmitter.stop();
-        this.brakeSmokeEmitter.stop();
+        this.brakeSmokeEmitterLeft.stop();
+        this.brakeSmokeEmitterRight.stop();
 
         // Fade music to ~10% of original
         if (!this.musicMuted) {
