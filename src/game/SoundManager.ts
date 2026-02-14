@@ -25,6 +25,10 @@ interface LayerConfig {
     seekStart: number;
     /** Maximum duration to play (in seconds). Only applies to non-looping sounds. */
     maxDuration?: number;
+    /** Silent gap between segment repeats (seconds). Requires maxDuration. */
+    gapDuration?: number;
+    /** How long (seconds) before segment end to begin fading out */
+    segmentFadeOut?: number;
 }
 
 interface Layer {
@@ -35,6 +39,8 @@ interface Layer {
     playing: boolean;
     /** Tracks playback time for non-looping sounds with maxDuration */
     playbackTime: number;
+    inGap: boolean;
+    gapTime: number;
 }
 
 // ── Crossfade layer ─────────────────────────────────────────────
@@ -109,6 +115,8 @@ export class SoundManager {
             fadeOut?: number;
             seekStart?: number;
             maxDuration?: number;
+            gapDuration?: number;
+            segmentFadeOut?: number;
         } = {}
     ) {
         const config: LayerConfig = {
@@ -119,6 +127,8 @@ export class SoundManager {
             fadeOut: options.fadeOut ?? 4,
             seekStart: options.seekStart ?? 0,
             maxDuration: options.maxDuration,
+            gapDuration: options.gapDuration,
+            segmentFadeOut: options.segmentFadeOut ?? 0.25,
         };
 
         const sound = this.scene.sound.add(key, {
@@ -133,6 +143,8 @@ export class SoundManager {
             targetVolume: 0,
             playing: false,
             playbackTime: 0,
+            inGap: false,
+            gapTime: 0,
         });
     }
 
@@ -200,6 +212,22 @@ export class SoundManager {
 
     private updateStandardLayers(dt: number) {
         for (const layer of this.layers.values()) {
+            // --- Gap phase: silent pause between segment repeats ---
+            if (layer.inGap) {
+                layer.gapTime += dt;
+                if (layer.targetVolume <= 0.01) {
+                    layer.inGap = false;
+                    layer.gapTime = 0;
+                    layer.currentVolume = 0;
+                    continue;
+                }
+                if (layer.gapTime >= (layer.config.gapDuration ?? 0)) {
+                    layer.inGap = false;
+                    layer.gapTime = 0;
+                }
+                continue;
+            }
+
             const diff = layer.targetVolume - layer.currentVolume;
 
             if (Math.abs(diff) < 0.005) {
@@ -217,21 +245,40 @@ export class SoundManager {
             }
 
             if (layer.playing) {
-                (layer.sound as Phaser.Sound.WebAudioSound).setVolume(this._muted ? 0 : layer.currentVolume);
-                
-                // Track playback time for non-looping sounds with maxDuration
+                let outputVolume = layer.currentVolume;
+
                 if (!layer.config.loop && layer.config.maxDuration !== undefined) {
                     layer.playbackTime += dt;
-                    
-                    // Stop the sound after maxDuration
+
+                    // Segment fade-out: ramp volume down near the end of the segment
+                    const fadeOutLen = layer.config.segmentFadeOut ?? 0.25;
+                    const fadeOutStart = layer.config.maxDuration - fadeOutLen;
+                    if (layer.playbackTime >= fadeOutStart) {
+                        const fadeProgress = Math.min(1, (layer.playbackTime - fadeOutStart) / fadeOutLen);
+                        outputVolume *= 1 - fadeProgress;
+                    }
+
                     if (layer.playbackTime >= layer.config.maxDuration) {
                         layer.sound.stop();
                         layer.playing = false;
-                        layer.currentVolume = 0;
-                        layer.targetVolume = 0;
                         layer.playbackTime = 0;
+
+                        if (layer.config.gapDuration !== undefined && layer.targetVolume > 0.01) {
+                            layer.inGap = true;
+                            layer.gapTime = 0;
+                            layer.currentVolume = 0;
+                        } else if (layer.targetVolume > 0.01) {
+                            layer.sound.play({ volume: layer.currentVolume, seek: layer.config.seekStart });
+                            layer.playing = true;
+                        } else {
+                            layer.currentVolume = 0;
+                            layer.targetVolume = 0;
+                        }
+                        continue;
                     }
                 }
+
+                (layer.sound as Phaser.Sound.WebAudioSound).setVolume(this._muted ? 0 : outputVolume);
             }
 
             if (layer.currentVolume <= 0.01 && layer.playing) {
@@ -251,8 +298,12 @@ export class SoundManager {
             if (Math.abs(scaleDiff) < 0.005) {
                 cf.currentScale = cf.targetScale;
             } else {
-                const scaleRate = 1 - Math.exp(-3 * dt);
-                cf.currentScale += scaleDiff * scaleRate;
+                if (scaleDiff > 0) {
+                    const scaleRate = 1 - Math.exp(-12 * dt);
+                    cf.currentScale += scaleDiff * scaleRate;
+                } else {
+                    cf.currentScale = Math.max(cf.targetScale, cf.currentScale - (1 / 1.5) * dt);
+                }
             }
 
             // Start the first instance on first update
@@ -348,6 +399,8 @@ export class SoundManager {
             layer.currentVolume = 0;
             layer.targetVolume = 0;
             layer.playbackTime = 0;
+            layer.inGap = false;
+            layer.gapTime = 0;
         }
         for (const cf of this.crossfadeLayers.values()) {
             cf.a.sound.stop();
