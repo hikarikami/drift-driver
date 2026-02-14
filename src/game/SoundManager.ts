@@ -231,7 +231,7 @@ export class SoundManager {
             if (Math.abs(scaleDiff) < 0.005) {
                 cf.currentScale = cf.targetScale;
             } else {
-                const scaleRate = 1 - Math.exp(-6 * dt);
+                const scaleRate = 1 - Math.exp(-3 * dt);
                 cf.currentScale += scaleDiff * scaleRate;
             }
 
