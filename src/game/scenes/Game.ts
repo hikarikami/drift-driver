@@ -373,7 +373,7 @@ export class Game extends Scene {
 
     private buildDebugModal() {
         const modalW = 280;
-        const modalH = 370;
+        const modalH = 410;
         const mx = (this.width - modalW) / 2;
         const my = (this.height - modalH) / 2;
 
@@ -484,6 +484,21 @@ export class Game extends Scene {
             }
         });
         this.debugModalContainer.add(sfxBtn);
+
+        cy += rowH + 4;
+
+        const endRunBtn = this.add.text(this.width / 2, cy, 'End Run', {
+            ...btnStyle, backgroundColor: '#aa3333', padding: { x: 16, y: 6 },
+        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
+        endRunBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            pointer.event.stopPropagation();
+            if (!this.gameOver) {
+                this.toggleDebugModal();
+                this.timeRemaining = 0;
+                this.endGame();
+            }
+        });
+        this.debugModalContainer.add(endRunBtn);
 
         cy += rowH + 4;
 
