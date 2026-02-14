@@ -40,6 +40,7 @@ export class Game extends Scene {
     private boostBarFill!: Phaser.GameObjects.Graphics;
     private boostFlameEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
     private boostSmokeEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
+    private brakeSmokeEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
 
     // Steering
     private readonly targetAngularVel = 4.0;
@@ -259,6 +260,19 @@ export class Game extends Scene {
         });
         this.boostSmokeEmitter.setDepth(3);
 
+        // Handbrake smoke emitter — thick puffs from the rear
+        this.brakeSmokeEmitter = this.add.particles(0, 0, 'flame_dot', {
+            color: [0x999999, 0x777777, 0x555555],
+            colorEase: 'linear',
+            lifespan: { min: 500, max: 900 },
+            scale: { start: 0.25, end: 0.7, ease: 'sine.out' },
+            speed: { min: 20, max: 50 },
+            alpha: { start: 0.3, end: 0 },
+            blendMode: 'NORMAL',
+            emitting: false,
+        });
+        this.brakeSmokeEmitter.setDepth(3);
+
         this.carShadow = this.add.image(0, 0, 'car_000').setDepth(3);
         this.carShadow.setTint(0x000000);
         this.carShadow.setAlpha(0.3);
@@ -366,6 +380,14 @@ export class Game extends Scene {
             seekStart: 0,
             maxDuration: 3.5,
             segmentFadeOut: 1.0,
+        });
+
+        this.soundManager.addLayer('nitro', 'nitro_sfx', {
+            loop: true,
+            maxVolume: 0.7,
+            fadeIn: 6,
+            fadeOut: 12,
+            seekStart: 0,
         });
 
         this.resetGame();
@@ -545,6 +567,7 @@ export class Game extends Scene {
         this.tireEmitterRight.killAll();
         this.boostFlameEmitter.killAll();
         this.boostSmokeEmitter.killAll();
+        this.brakeSmokeEmitter.killAll();
 
         this.spawnPickup();
         this.gameOverText.setVisible(false);
@@ -852,6 +875,17 @@ export class Game extends Scene {
             this.boostSmokeEmitter.emitParticleAt(smokeX, smokeY, smokeCount);
         }
 
+        // --- Handbrake smoke ---
+        if (brakeInput && speed > 30) {
+            const exhaustDist = 14;
+            const rearX = hx - Math.cos(this.headAngle) * exhaustDist;
+            const rearY = hy - Math.sin(this.headAngle) * exhaustDist;
+            const exhaustAngleDeg = ((this.headAngle + Math.PI) * 180 / Math.PI);
+            this.brakeSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 35, max: exhaustAngleDeg + 35 };
+            const count = Math.ceil(Math.min(speed / 80, 1) * 4);
+            this.brakeSmokeEmitter.emitParticleAt(rearX, rearY, count);
+        }
+
         // --- Pickup ---
         const pdx = hx - this.pickupX;
         const pdy = hy - this.pickupY;
@@ -905,6 +939,9 @@ export class Game extends Scene {
         // --- Sound layers ---
         const brakeScreech = brakeInput ? 0.15 : 0;
         this.soundManager.setLayerTarget('screech', Math.max(this.tireMarkIntensity, brakeScreech));
+
+        const nitroTarget = (thrustInput && this.boostFuel > 0 && !brakeInput) ? 1 : 0;
+        this.soundManager.setLayerTarget('nitro', nitroTarget);
 
         if (this.isAccelerating) {
             this.accelStopTimer = 0;
@@ -960,6 +997,7 @@ export class Game extends Scene {
 
         this.boostFlameEmitter.stop();
         this.boostSmokeEmitter.stop();
+        this.brakeSmokeEmitter.stop();
 
         // Fade music to ~10% of original
         if (!this.musicMuted) {
@@ -975,6 +1013,7 @@ export class Game extends Scene {
         this.soundManager.setLayerTarget('screech', 0);
         this.soundManager.setCrossfadeLayerScale('engine', 0);
         this.soundManager.setLayerTarget('stopping', 0);
+        this.soundManager.setLayerTarget('nitro', 0);
 
         this.timerText.setVisible(false);
 
