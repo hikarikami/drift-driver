@@ -1,0 +1,12 @@
+{
+    "$schema": "https://capy.ai/settings.schema.json",
+    "hooks": {
+      "setup": ["npm install"],
+      "terminals": [
+        { "name": "dev", "command": "npm run dev", "readonly": false }
+      ],
+      "previews": [
+        { "name": "app", "port": 8080 }
+      ]
+    }
+  }
