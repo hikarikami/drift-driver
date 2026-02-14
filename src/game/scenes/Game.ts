@@ -18,11 +18,14 @@ export class Game extends Scene {
     // Physics tuning — top-down racer with drift
     private forwardThrust = 325;
     private readonly boostThrust = 600;
-    private readonly boostMaxSpd = 465;
+    private readonly boostMaxSpeed = 465;
     private readonly brakeFactor = 0.75;
     private drag = 60;
-    private maxSpd = 280;
+    private maxSpeed = 280;
     private readonly minSpeed = 10;
+    private readonly acceleration = 5;
+    private readonly decelBase = 2.0;
+    private readonly decelMomentumFactor = 0.003;
 
     // Boost gauge
     private readonly boostMax = 1.25;        // full gauge = 1.0
@@ -40,6 +43,7 @@ export class Game extends Scene {
 
     // Steering
     private readonly targetAngularVel = 4.0;
+    private readonly minSteerFraction = 0.15;
     private readonly steerSmoothing = 25;
     private readonly returnSmoothing = 25;
     private readonly maxDriftAngle = 3.5;
@@ -68,6 +72,11 @@ export class Game extends Scene {
 
     // Sound
     private soundManager!: SoundManager;
+    private currentSpeed = 0;
+    private isAccelerating = false;
+    private accelStopTimer = 0;
+    private readonly engineFadeDelay = 0.3;
+    private readonly stoppingFadeDelay = 0.56;
     private music!: Phaser.Sound.BaseSound;
     private musicMuted = false;
 
@@ -362,8 +371,8 @@ export class Game extends Scene {
         makeBtn('Thrust -', () => { this.forwardThrust = Math.max(this.forwardThrust - 40, 80); });
         makeBtn('Drag +', () => { this.drag = Math.min(this.drag + 20, 400); });
         makeBtn('Drag -', () => { this.drag = Math.max(this.drag - 20, 0); });
-        makeBtn('Max Spd +', () => { this.maxSpd = Math.min(this.maxSpd + 30, 600); });
-        makeBtn('Max Spd -', () => { this.maxSpd = Math.max(this.maxSpd - 30, 80); });
+        makeBtn('Max Spd +', () => { this.maxSpeed = Math.min(this.maxSpeed + 30, 600); });
+        makeBtn('Max Spd -', () => { this.maxSpeed = Math.max(this.maxSpeed - 30, 80); });
 
         btnY += 10;
 
@@ -411,11 +420,13 @@ export class Game extends Scene {
         });
 
         this.soundManager.addLayer('stopping', 'stopping_sfx', {
-            loop: true,
-            maxVolume: 0.35,
-            fadeIn: 6,
-            fadeOut: 8,
+            loop: false,
+            maxVolume: 0.28,
+            fadeIn: 4,
+            fadeOut: 12,
             seekStart: 0,
+            maxDuration: 3.5,
+            segmentFadeOut: 1.0,
         });
 
         this.resetGame();
@@ -436,8 +447,9 @@ export class Game extends Scene {
         this.headSprite.setPosition(this.width / 2, this.height / 2);
         body.reset(this.width / 2, this.height / 2);
         body.setVelocity(0, 0);
-        body.setMaxSpeed(this.maxSpd);
+        body.setMaxSpeed(this.maxSpeed);
         body.setDrag(0, 0);
+        this.currentSpeed = this.minSpeed;
 
         // Clear existing tire marks
         this.tireEmitterLeft.killAll();
@@ -454,11 +466,45 @@ export class Game extends Scene {
         const margin = 40;
         this.pickupX = margin + Math.random() * (this.width - 2 * margin);
         this.pickupY = margin + Math.random() * (this.height - 2 * margin);
+
+        const dropHeight = 30;
+        const dropDuration = 240;
+        const bounceDuration = 120;
+        const bounceHeight = 4;
+
         if (this.pickupSprite) {
-            this.pickupSprite.setPosition(this.pickupX, this.pickupY);
+            this.tweens.killTweensOf(this.pickupSprite);
+            this.pickupSprite.setPosition(this.pickupX, this.pickupY - dropHeight);
+            this.pickupSprite.setAlpha(0);
+
+            this.tweens.add({
+                targets: this.pickupSprite,
+                y: this.pickupY,
+                alpha: 1,
+                duration: dropDuration,
+                ease: 'Quad.easeIn',
+                onComplete: () => {
+                    this.tweens.add({
+                        targets: this.pickupSprite,
+                        y: this.pickupY - bounceHeight,
+                        duration: bounceDuration,
+                        ease: 'Sine.easeOut',
+                        yoyo: true,
+                    });
+                },
+            });
         }
         if (this.pickupShadow) {
+            this.tweens.killTweensOf(this.pickupShadow);
             this.pickupShadow.setPosition(this.pickupX + 0.5, this.pickupY + 1.5);
+            this.pickupShadow.setAlpha(0);
+
+            this.tweens.add({
+                targets: this.pickupShadow,
+                alpha: 0.3,
+                duration: dropDuration,
+                ease: 'Linear',
+            });
         }
     }
 
@@ -470,7 +516,7 @@ export class Game extends Scene {
         const dt = delta / 1000;
 
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setMaxSpeed(this.maxSpd);
+        body.setMaxSpeed(this.maxSpeed);
 
         // --- Input ---
         const keyboard = this.input.keyboard;
@@ -480,19 +526,24 @@ export class Game extends Scene {
         if (keyboard) {
             const left = keyboard.addKey('LEFT', false, false);
             const right = keyboard.addKey('RIGHT', false, false);
-            const up = keyboard.addKey('SHIFT', false, false);
+            const up = keyboard.addKey('UP', false, false);
             const a = keyboard.addKey('A', false, false);
             const d = keyboard.addKey('D', false, false);
-            const w = keyboard.addKey('SHIFT', false, false);
+            const w = keyboard.addKey('W', false, false);
+            const shift = keyboard.addKey('SHIFT', false, false);
             const space = keyboard.addKey('SPACE', false, false);
             if (left.isDown || a.isDown) turnInput -= 1;
             if (right.isDown || d.isDown) turnInput += 1;
-            if (up.isDown || w.isDown) thrustInput = true;
+            if (up.isDown || w.isDown) this.isAccelerating = true;
+            else this.isAccelerating = false;
+            if (shift.isDown) thrustInput = true;
             if (space.isDown) brakeInput = true;
         }
 
-        // --- Smooth steering ---
-        const targetAV = turnInput * this.targetAngularVel;
+        // --- Smooth steering (speed-dependent) ---
+        const speedRatio = Math.min(body.speed / this.maxSpeed, 1);
+        const steerScale = this.minSteerFraction + (1 - this.minSteerFraction) * speedRatio;
+        const targetAV = turnInput * this.targetAngularVel * steerScale;
         const smoothRate = turnInput !== 0 ? this.steerSmoothing : this.returnSmoothing;
         const lerpFactor = 1 - Math.exp(-smoothRate * dt);
         this.angularVel += (targetAV - this.angularVel) * lerpFactor;
@@ -539,6 +590,15 @@ export class Game extends Scene {
             }
         }
 
+        // --- Acceleration / Deceleration ---
+        if (this.isAccelerating) {
+            this.currentSpeed = Math.min(this.currentSpeed + this.acceleration * dt * 60, this.maxSpeed);
+        } else {
+            const momentum = this.currentSpeed * this.decelMomentumFactor;
+            const decelRate = Math.max(this.decelBase - momentum, 0.3);
+            this.currentSpeed = Math.max(this.currentSpeed - decelRate * dt * 60, this.minSpeed);
+        }
+
         // --- Thrust / Handbrake ---
         // Floor speed while braking — never fully stop
         const brakeMinSpeed = this.minSpeed * 0.4;
@@ -571,18 +631,21 @@ export class Game extends Scene {
             // Blend thrust and max speed based on smooth intensity
             const t = this.boostIntensity;
             const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * t;
-            const currentMaxSpd = this.maxSpd + (this.boostMaxSpd - this.maxSpd) * t;
+            const activeMaxSpeed = this.currentSpeed + (this.boostMaxSpeed - this.currentSpeed) * t;
 
-            body.setMaxSpeed(currentMaxSpd);
+            body.setMaxSpeed(activeMaxSpeed);
             body.setAcceleration(facingX * thrust, facingY * thrust);
 
-            // Enforce minimum speed only when NOT braking
+            // Clamp speed to current target (minSpeed .. currentSpeed)
             const speed = body.speed;
             if (speed < this.minSpeed && speed > 0) {
                 body.velocity.x *= this.minSpeed / speed;
                 body.velocity.y *= this.minSpeed / speed;
             } else if (speed === 0) {
                 body.setVelocity(facingX * this.minSpeed, facingY * this.minSpeed);
+            } else if (speed > this.currentSpeed && t === 0) {
+                body.velocity.x *= this.currentSpeed / speed;
+                body.velocity.y *= this.currentSpeed / speed;
             }
         }
 
@@ -722,8 +785,21 @@ export class Game extends Scene {
         // --- Sound layers ---
         const brakeScreech = brakeInput ? 0.15 : 0;
         this.soundManager.setLayerTarget('screech', Math.max(this.tireMarkIntensity, brakeScreech));
-        this.soundManager.setLayerTarget('stopping', brakeInput ? 1 : 0);
-        this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0.3 : 1);
+
+        // Engine SFX: 300ms grace period before fade-out kicks in
+        if (this.isAccelerating) {
+            this.accelStopTimer = 0;
+            this.soundManager.setCrossfadeLayerScale('engine', 1);
+        } else {
+            this.accelStopTimer += dt;
+            if (this.accelStopTimer >= this.engineFadeDelay) {
+                this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0.3 : 0);
+            }
+        }
+
+        // Stopping SFX: delayed fade-in when user stops accelerating
+        const stoppingTarget = (!this.isAccelerating && this.accelStopTimer >= this.stoppingFadeDelay) ? 1 : 0;
+        this.soundManager.setLayerTarget('stopping', stoppingTarget);
         this.soundManager.update(dt);
     }
 }
