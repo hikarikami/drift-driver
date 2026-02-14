@@ -387,6 +387,14 @@ export class Game extends Scene {
             crossfadeAt: 0.75,       // start crossfade at 75% through
         });
 
+        this.soundManager.addLayer('stopping', 'stopping_sfx', {
+            loop: true,
+            maxVolume: 0.35,
+            fadeIn: 6,
+            fadeOut: 8,
+            seekStart: 0,
+        });
+
         this.resetGame();
     }
 
@@ -690,6 +698,8 @@ export class Game extends Scene {
 
         // --- Sound layers ---
         this.soundManager.setLayerTarget('screech', this.tireMarkIntensity);
+        this.soundManager.setLayerTarget('stopping', brakeInput ? 1 : 0);
+        this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0 : 1);
         this.soundManager.update(dt);
     }
 }

@@ -62,6 +62,8 @@ interface CrossfadeLayer {
     b: CrossfadeInstance;
     active: 'a' | 'b';
     started: boolean;
+    targetScale: number;
+    currentScale: number;
 }
 
 // ── SoundManager ────────────────────────────────────────────────
@@ -157,7 +159,16 @@ export class SoundManager {
             b: makeInstance(),
             active: 'a',
             started: false,
+            targetScale: 1,
+            currentScale: 1,
         });
+    }
+
+    setCrossfadeLayerScale(name: string, scale: number) {
+        const layer = this.crossfadeLayers.get(name);
+        if (layer) {
+            layer.targetScale = Math.max(0, Math.min(1, scale));
+        }
     }
 
     // ── Update ──────────────────────────────────────────────────
@@ -216,6 +227,14 @@ export class SoundManager {
         for (const cf of this.crossfadeLayers.values()) {
             const { config } = cf;
 
+            const scaleDiff = cf.targetScale - cf.currentScale;
+            if (Math.abs(scaleDiff) < 0.005) {
+                cf.currentScale = cf.targetScale;
+            } else {
+                const scaleRate = 1 - Math.exp(-6 * dt);
+                cf.currentScale += scaleDiff * scaleRate;
+            }
+
             // Start the first instance on first update
             if (!cf.started) {
                 this.startCrossfadeInstance(cf.a, config);
@@ -224,8 +243,8 @@ export class SoundManager {
             }
 
             // Update both instances
-            this.tickCrossfadeInstance(cf.a, config, dt);
-            this.tickCrossfadeInstance(cf.b, config, dt);
+            this.tickCrossfadeInstance(cf.a, config, dt, cf.currentScale);
+            this.tickCrossfadeInstance(cf.b, config, dt, cf.currentScale);
 
             const active = cf.active === 'a' ? cf.a : cf.b;
             const inactive = cf.active === 'a' ? cf.b : cf.a;
@@ -274,7 +293,7 @@ export class SoundManager {
         inst.duration = sndDuration > 0 ? sndDuration - seek : 0;
     }
 
-    private tickCrossfadeInstance(inst: CrossfadeInstance, config: CrossfadeConfig, dt: number) {
+    private tickCrossfadeInstance(inst: CrossfadeInstance, config: CrossfadeConfig, dt: number, scale = 1) {
         if (inst.state === 'idle') return;
 
         inst.elapsed += dt;
@@ -297,7 +316,7 @@ export class SoundManager {
             }
         }
 
-        inst.sound.setVolume(inst.volume);
+        inst.sound.setVolume(inst.volume * scale);
     }
 
     // ── Cleanup ─────────────────────────────────────────────────
@@ -318,6 +337,8 @@ export class SoundManager {
             cf.a.volume = 0;
             cf.b.volume = 0;
             cf.started = false;
+            cf.targetScale = 1;
+            cf.currentScale = 1;
         }
     }
 
