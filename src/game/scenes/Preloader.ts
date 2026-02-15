@@ -32,9 +32,28 @@ export class Preloader extends Scene
         //  Load the assets for the game
         this.load.setPath('assets');
 
+
         this.load.image('logo', 'logo.png');
         this.load.image('crate', 'score/crate.png');
-        this.load.image('iso_tileset', 'scenery/tilemap/tileset.png');
+        this.load.image('trophy', 'score/trophy.png');
+
+        //load dirt tiles
+        for (let i = 0; i <= 10; i++) {
+            const num = String(i).padStart(3, '0');
+            this.load.image(`tile_${num}`, `scenery/tilemap/dirt/tile_${num}.png`);
+        }
+
+        // Load decoration tiles from row 5 (tiles 64-79, assuming 16 tiles per row)
+        // Adjust the range based on which decorations you want
+        for (let i = 50; i <= 60; i++) {
+            const num = String(i).padStart(3, '0');
+            this.load.image(`tile_${num}`, `scenery/tilemap/dirt/tile_${num}.png`);
+        }
+
+        // Load cactus/tree decorations
+        for (let i = 1; i <= 7; i++) {
+            this.load.image(`tree-${i}`, `scenery/cactus/tree-${i}.png`);
+        }
 
         // Sounds
         this.load.audio('screech_sfx', 'sounds/screech.mp3');
@@ -42,6 +61,10 @@ export class Preloader extends Scene
         this.load.audio('stopping_sfx', 'sounds/stopping.mp3');
         this.load.audio('nitro_sfx', 'sounds/nitro.mp3');
         this.load.audio('collect-1', 'sounds/collect-1.mp3');
+        this.load.audio('crash-1', 'sounds/car-crash-1.mp3');
+        this.load.audio('crash-2', 'sounds/car-crash-2.mp3');
+        this.load.audio('crash-3', 'sounds/car-crash-3.mp3');
+        this.load.audio('trick', 'sounds/trick-1.mp3'); // Placeholder - add a quick "ding" or "whip" sound
         this.load.audio('theme1', 'music/music-1.mp3');
         this.load.audio('theme2', 'music/music-2.mp3');
 

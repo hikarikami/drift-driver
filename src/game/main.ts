@@ -9,12 +9,12 @@ import { Preloader } from './scenes/Preloader';
 //  https://docs.phaser.io/api-documentation/typedef/types-core#gameconfig
 const config: Phaser.Types.Core.GameConfig = {
     type: AUTO,
-    width: 1024,
-    height: 768,
+    width: 1920,  // Changed from 1024
+    height: 1080, // Changed from 768 (16:9 ratio)
     parent: 'game-container',
     backgroundColor: '#1a1208',
     scale: {
-        mode: Phaser.Scale.FIT,
+        mode: Phaser.Scale.FIT,  // This makes it responsive!
         autoCenter: Phaser.Scale.CENTER_BOTH,
     },
     physics: {

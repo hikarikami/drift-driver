@@ -41,6 +41,8 @@ interface Layer {
     playbackTime: number;
     inGap: boolean;
     gapTime: number;
+    /** Track when sound was last started to prevent rapid replays */
+    lastPlayTime: number;
 }
 
 // ── Crossfade layer ─────────────────────────────────────────────
@@ -135,6 +137,8 @@ export class SoundManager {
             loop: config.loop,
             volume: 0,
         });
+        
+        console.log(`[SOUND] Added layer "${name}" (${key}, loop: ${config.loop})`);
 
         this.layers.set(name, {
             config,
@@ -145,6 +149,7 @@ export class SoundManager {
             playbackTime: 0,
             inGap: false,
             gapTime: 0,
+            lastPlayTime: 0,
         });
     }
 
@@ -184,6 +189,8 @@ export class SoundManager {
             elapsed: 0,
             duration: 0,
         });
+
+        console.log(`[SOUND] Added crossfade layer "${name}" (${key})`);
 
         this.crossfadeLayers.set(name, {
             config,
@@ -239,9 +246,20 @@ export class SoundManager {
             }
 
             if (layer.currentVolume > 0.01 && !layer.playing) {
-                layer.sound.play({ volume: layer.currentVolume, seek: layer.config.seekStart });
-                layer.playing = true;
-                layer.playbackTime = 0;
+                // Safeguard: Don't replay if we just played this sound very recently
+                const now = Date.now();
+                const timeSinceLastPlay = now - layer.lastPlayTime;
+                const isCurrentlyPlaying = layer.sound.isPlaying;
+                
+                // Only play if:
+                // 1. Sound is not currently playing
+                // 2. At least 50ms has passed since last play (prevents machine-gun effect)
+                if (!isCurrentlyPlaying && timeSinceLastPlay > 50) {
+                    layer.sound.play({ volume: layer.currentVolume, seek: layer.config.seekStart });
+                    layer.playing = true;
+                    layer.playbackTime = 0;
+                    layer.lastPlayTime = now;
+                }
             }
 
             if (layer.playing) {
@@ -268,8 +286,14 @@ export class SoundManager {
                             layer.gapTime = 0;
                             layer.currentVolume = 0;
                         } else if (layer.targetVolume > 0.01) {
-                            layer.sound.play({ volume: layer.currentVolume, seek: layer.config.seekStart });
-                            layer.playing = true;
+                            // Safeguard: Only restart if not already playing and enough time passed
+                            const now = Date.now();
+                            const timeSinceLastPlay = now - layer.lastPlayTime;
+                            if (!layer.sound.isPlaying && timeSinceLastPlay > 50) {
+                                layer.sound.play({ volume: layer.currentVolume, seek: layer.config.seekStart });
+                                layer.playing = true;
+                                layer.lastPlayTime = now;
+                            }
                         } else {
                             layer.currentVolume = 0;
                             layer.targetVolume = 0;
@@ -282,7 +306,9 @@ export class SoundManager {
             }
 
             if (layer.currentVolume <= 0.01 && layer.playing) {
-                layer.sound.stop();
+                if (layer.sound.isPlaying) {
+                    layer.sound.stop();
+                }
                 layer.playing = false;
                 layer.currentVolume = 0;
                 layer.playbackTime = 0;
@@ -393,6 +419,7 @@ export class SoundManager {
     // ── Cleanup ─────────────────────────────────────────────────
 
     stopAll() {
+        console.log('[SOUND] SoundManager.stopAll() called');
         for (const layer of this.layers.values()) {
             layer.sound.stop();
             layer.playing = false;
@@ -401,6 +428,7 @@ export class SoundManager {
             layer.playbackTime = 0;
             layer.inGap = false;
             layer.gapTime = 0;
+            layer.lastPlayTime = 0;
         }
         for (const cf of this.crossfadeLayers.values()) {
             cf.a.sound.stop();
@@ -416,6 +444,7 @@ export class SoundManager {
     }
 
     destroy() {
+        console.log('[SOUND] SoundManager.destroy() called - cleaning up', this.layers.size, 'layers and', this.crossfadeLayers.size, 'crossfade layers');
         for (const layer of this.layers.values()) {
             layer.sound.destroy();
         }
@@ -425,5 +454,6 @@ export class SoundManager {
             cf.b.sound.destroy();
         }
         this.crossfadeLayers.clear();
+        console.log('[SOUND] SoundManager destroyed');
     }
 }
