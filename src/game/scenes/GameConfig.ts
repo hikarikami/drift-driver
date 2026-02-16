@@ -13,12 +13,12 @@ export type GameMode = 'single' | 'battle';
 export type InputSource = 'keyboard' | 'remote';
 
 export interface KeyBindings {
-    up: string;
-    down: string;
-    left: string;
-    right: string;
-    boost: string;
-    brake: string;
+    up: string | number;
+    down: string | number;
+    left: string | number;
+    right: string | number;
+    boost: string | number;
+    brake: string | number;
 }
 
 export interface PlayerConfig {
@@ -49,8 +49,8 @@ export const PLAYER2_KEYS: KeyBindings = {
     down: 'DOWN',
     left: 'LEFT',
     right: 'RIGHT',
-    boost: 'ENTER',
-    brake: 'BACKSPACE',
+    boost: 190,       // Period key (.)
+    brake: 188,       // Comma key (,)
 };
 
 export function createSinglePlayerConfig(): GameSessionConfig {

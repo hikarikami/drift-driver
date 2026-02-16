@@ -98,6 +98,15 @@ export class MainMenu extends Scene {
         const topY = panelY + 14;
 
         // helper to draw one table
+        // Helper to get a friendly display name for a key binding
+        const keyName = (k: string | number): string => {
+            if (typeof k === 'number') {
+                const map: Record<number, string> = { 188: ',', 190: '.', 191: '/', 186: ';', 222: "'", 219: '[', 221: ']' };
+                return map[k] ?? `Key${k}`;
+            }
+            return k;
+        };
+
         const renderControlsTable = (
             title: string,
             keys:KeyBindings,
@@ -117,12 +126,12 @@ export class MainMenu extends Scene {
             const keyColX = x + width - 10; // right aligned keys
 
             const rows: Array<[string, string]> = [
-                ['Accelerate', keys.up],
-                ['Brake / Reverse', keys.down],
-                ['Steer Left', keys.left],
-                ['Steer Right', keys.right],
-                ['Boost (Nitro)', keys.boost],
-                ['Brake (Handbrake)', keys.brake],
+                ['Accelerate', keyName(keys.up)],
+                ['Brake / Reverse', keyName(keys.down)],
+                ['Steer Left', keyName(keys.left)],
+                ['Steer Right', keyName(keys.right)],
+                ['Boost (Nitro)', keyName(keys.boost)],
+                ['Brake (Handbrake)', keyName(keys.brake)],
             ];
 
             rows.forEach(([action, key], i) => {
