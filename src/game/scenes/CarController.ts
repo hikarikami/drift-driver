@@ -41,8 +41,8 @@ export class CarController {
     drag = 100;
     maxSpeed = 310;
     readonly headRadius = 10; // legacy, kept for compatibility
-    readonly hitboxWidth = 30;
-    readonly hitboxHeight = 24;
+    readonly hitboxWidth = 42;
+    readonly hitboxHeight = 20;
     readonly totalCarFrames = 48;
     private readonly boostThrust = 600;
     readonly boostMaxSpeed = 512;

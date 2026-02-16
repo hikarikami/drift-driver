@@ -174,7 +174,7 @@ export class Game extends Scene {
         // Set the physics body to match the rectangle size
         const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
         body.setSize(car.hitboxWidth, car.hitboxHeight);
-        body.setOffset(-car.hitboxWidth / 2, -car.hitboxHeight / 2);
+        // body.setOffset(-car.hitboxWidth / 12 , -car.hitboxHeight / 12);
 
         // Create car visuals using player's sprite set
         const initialFrame = `${spritePrefix}_000`;
@@ -182,7 +182,7 @@ export class Game extends Scene {
         car.carSprite = this.add.image(0, 0, initialFrame).setDepth(4);
 
         // Setup physics body
-     
+       
         body.setCollideWorldBounds(false);
         body.setBounce(0.3, 0.3);
         body.setMaxVelocity(car.boostMaxSpeed, car.boostMaxSpeed);

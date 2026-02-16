@@ -71,7 +71,7 @@ export class ParticleEffects {
             blendMode: 'NORMAL',
             emitting: false,
         });
-        this.boostSmokeEmitter.setDepth(3);
+        this.boostSmokeEmitter.setDepth(4);
 
         // --- Brake smoke ---
         const brakeSmokeConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
@@ -128,26 +128,30 @@ export class ParticleEffects {
             this.tireEmitterRight.emitParticleAt(rightX, rightY, 1);
         }
 
-        // --- Boost flame/smoke ---
-        if (car.boostIntensity > 0.01) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
-            const velAngle = Math.atan2(vy, vx);
-            const exhaustAngleDeg = (velAngle * 180 / Math.PI + 180) % 360;
+       // --- Boost flame/smoke ---
+if (car.boostIntensity > 0.01) {
+    // Depth: always behind the car
+    const carDepth = car.carSprite?.depth ?? 4;
+    this.boostFlameEmitter.setDepth(carDepth +1);
+    this.boostSmokeEmitter.setDepth(carDepth +1);
 
-            const exhaustLocalX = car.rearWheelX - 15;
-            const exhaustLocalY = 0;
-            const exhaustX = hx + Math.cos(car.headAngle) * exhaustLocalX - Math.sin(car.headAngle) * exhaustLocalY;
-            const exhaustY = hy + Math.sin(car.headAngle) * exhaustLocalX + Math.cos(car.headAngle) * exhaustLocalY;
+    // Angle: always out the back of the car (not based on velocity/drift)
+    const exhaustAngleDeg = ((car.headAngle * 180) / Math.PI + 180) % 360;
 
-            this.boostFlameEmitter.particleAngle = { min: exhaustAngleDeg - 8, max: exhaustAngleDeg + 8 };
-            const flameCount = Math.ceil(car.boostIntensity * 3);
-            this.boostFlameEmitter.emitParticleAt(exhaustX, exhaustY, flameCount);
+    // Position: behind the car, rotated with car angle
+    const exhaustLocalX = car.rearWheelX - 25;
+    const exhaustLocalY = 0;
+    const exhaustX = hx + Math.cos(car.headAngle) * exhaustLocalX - Math.sin(car.headAngle) * exhaustLocalY;
+    const exhaustY = hy + Math.sin(car.headAngle) * exhaustLocalX + Math.cos(car.headAngle) * exhaustLocalY;
 
-            this.boostSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 25, max: exhaustAngleDeg + 25 };
-            const smokeCount = Math.ceil(car.boostIntensity * 5.5);
-            this.boostSmokeEmitter.emitParticleAt(exhaustX, exhaustY, smokeCount);
-        }
+    this.boostFlameEmitter.particleAngle = { min: exhaustAngleDeg - 8, max: exhaustAngleDeg + 8 };
+    const flameCount = Math.ceil(car.boostIntensity * 3);
+    this.boostFlameEmitter.emitParticleAt(exhaustX, exhaustY, flameCount);
+
+    this.boostSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 25, max: exhaustAngleDeg + 25 };
+    const smokeCount = Math.ceil(car.boostIntensity * 5.5);
+    this.boostSmokeEmitter.emitParticleAt(exhaustX, exhaustY, smokeCount);
+}
 
         // --- Brake smoke ---
         if (brakeInput && speed > 30) {
