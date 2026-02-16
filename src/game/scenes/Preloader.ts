@@ -43,6 +43,11 @@ export class Preloader extends Scene
             this.load.image(`tile_${num}`, `scenery/tilemap/dirt/tile_${num}.png`);
         }
 
+        //load rock obstacles
+        for (let i = 1; i <= 12; i++) {
+            this.load.image(`rock-${i}`, `scenery/rocks/rock-${i}.png`);
+        }
+
         // Load decoration tiles from row 5 (tiles 64-79, assuming 16 tiles per row)
         // Adjust the range based on which decorations you want
         for (let i = 50; i <= 60; i++) {
@@ -70,8 +75,9 @@ export class Preloader extends Scene
 
         // Load 48 car rotation frames (000 = facing right, clockwise)
         for (let i = 0; i < 48; i++) {
-            const num = String(i).padStart(3, '0');
-            this.load.image(`car_${num}`, `car/Red_CIVIC_CLEAN_All_${num}.png`);
+            const frame = String(i).padStart(3, '0');
+            this.load.image(`car-1_${frame}`, `car-1/Red_CIVIC_CLEAN_All_${frame}.png`);
+            this.load.image(`car-2_${frame}`, `car-2/Blue_CIVIC_CLEAN_All_${frame}.png`);
         }
     }
 

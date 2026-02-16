@@ -1,118 +1,59 @@
 import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
+import { SceneryManager } from './SceneryManager';
+import { CarController, CarInput } from './CarController';
+import { ParticleEffects } from './ParticleEffects';
+import { PickupManager } from './PickupManager';
+import { UIManager } from './UIManager';
+import { DebugModal } from './DebugModal';
+import {
+    GameSessionConfig, GameMode, PlayerConfig,
+    createSinglePlayerConfig, PLAYER1_KEYS,
+} from './GameConfig';
+
+// ========== Per-player state bundle ==========
+
+interface PlayerState {
+    config: PlayerConfig;
+    car: CarController;
+    particles: ParticleEffects;
+    score: number;
+    lastCollisionTime: number;
+    crashSoundPlays: number;
+    crashSoundCooldownUntil: number;
+    accelStopTimer: number;
+}
 
 export class Game extends Scene {
     // World bounds
     private width!: number;
     private height!: number;
-  // Rock visuals (no physics)
-private obstacleSprites: Phaser.GameObjects.Image[] = [];
 
-// Rock colliders (bottom-only hitboxes)
-private obstacleHitboxes!: Phaser.Physics.Arcade.StaticGroup;
+    // Session
+    private sessionConfig!: GameSessionConfig;
+    private mode: GameMode = 'single';
 
-// If you want to keep using your existing loops that iterate "decorations":
-// make it represent the collider zones (not the visuals).
-private decorations: Phaser.GameObjects.Zone[] = [];
+    // Players (1 or 2)
+    private players: PlayerState[] = [];
 
+    // Shared sub-systems
+    private scenery!: SceneryManager;
+    private pickup!: PickupManager;
+    private ui!: UIManager;
+    private debug!: DebugModal;
 
-    // Car (physics-driven)
-    private headSprite!: Phaser.GameObjects.Arc;
-    private carSprite!: Phaser.GameObjects.Image;
-    private carShadow!: Phaser.GameObjects.Image;
-    private headAngle!: number;
-    private angularVel = 0;
-    private readonly headRadius = 10;
-    private readonly totalCarFrames = 48;
-
-    // Physics tuning — top-down racer with drift
-    private forwardThrust = 325;
-    private readonly boostThrust = 600;
-    private readonly boostMaxSpeed = 512; // Increased from 488
-    private readonly brakeFactor = 0.75;
-    private drag = 100;
-    private maxSpeed = 310;
-    private readonly minSpeed = 0;
-    private readonly maxReverseSpeed = -125; // Increased from -60 for punchier reverse
-    private readonly reverseAccel = 5;
-    private readonly acceleration = 6.25;
-    private readonly decelBase = 2.0;
-    private readonly decelMomentumFactor = 0.1;
-
-    // Boost gauge
-    private readonly boostMax = 1.25;
-    private readonly boostDrainRate = 0.4;
-    private readonly boostRefillAmount = 0.35;
-    private boostFuel = 1;
-    private boostIntensity = 0.2;
-    private readonly boostRampUp = 5.0; // Increased from 3.5 for snappier boost
-    private readonly boostRampDown = 3.5; // Increased from 2 for quicker boost fade
-    private boostBarDisplay = 1.25;
-    private boostBarBg!: Phaser.GameObjects.Graphics;
-    private boostBarFill!: Phaser.GameObjects.Graphics;
-    private boostFlameEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private boostSmokeEmitter!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private brakeSmokeEmitterLeft!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private brakeSmokeEmitterRight!: Phaser.GameObjects.Particles.ParticleEmitter;
-
-    // Steering
-    private readonly targetAngularVel = 4.0;
-    private readonly minSteerFraction = 0.15;
-    private readonly steerSmoothing = 25;
-    private readonly returnSmoothing = 25;
-    private readonly maxDriftAngle = 3.5;
-    private readonly driftSoftness = 0.1;
-    private readonly gripRate = 2.5;
-
-    // Tire mark emitters
-    private tireEmitterLeft!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private tireEmitterRight!: Phaser.GameObjects.Particles.ParticleEmitter;
-    private readonly rearWheelX = -4;
-    private readonly wheelSpreadY = 10;
-    private tireMarkIntensity = 0;
-
-    // Pickup
-    private pickupX!: number;
-    private pickupY!: number;
-    private readonly pickupCollectDist = 32;
-    private pickupSprite!: Phaser.GameObjects.Image;
-    private pickupShadow!: Phaser.GameObjects.Image;
-
-    // State
-    private score = 0;
+    // Shared state
     private gameOver = false;
-
-    // Collision
-    private lastCollisionTime = 0;
-    private readonly collisionCooldown = 500; // ms between collision impacts
-
-    // Countdown timer
     private timeRemaining = 60;
-    private timerText!: Phaser.GameObjects.Text;
     private readonly startTime = 60;
-    private readonly pickupTimeBonus = 4; // Time bonus when collecting trophy
+    private readonly pickupTimeBonus = 4;
+    private readonly collisionCooldown = 500;
+    private readonly crashSoundMaxPlays = 2;
+    private readonly crashSoundCooldown = 1750;
 
-    // Debug modal
-    private debugModalContainer!: Phaser.GameObjects.Container;
-    private debugModalOpen = false;
-    private debugBtn!: Phaser.GameObjects.Text;
-    private debugThrustLabel!: Phaser.GameObjects.Text;
-    private debugDragLabel!: Phaser.GameObjects.Text;
-    private debugMaxSpdLabel!: Phaser.GameObjects.Text;
-
-    // Game over overlay objects (destroyed on restart)
-    private finalScoreText?: Phaser.GameObjects.Text;
-    private playAgainBtn?: Phaser.GameObjects.Text;
-
-
-    //music volume
+    // Music & Sound
     private musicVolume = 0.35;
-
-    // Sound
     private soundManager!: SoundManager;
-    private currentSpeed = 0;
-    private isAccelerating = false;
-    private accelStopTimer = 0;
     private readonly engineFadeDelay = 0.165;
     private music!: Phaser.Sound.BaseSound;
     private musicMuted = false;
@@ -121,311 +62,31 @@ private decorations: Phaser.GameObjects.Zone[] = [];
     private crashSound2!: Phaser.Sound.BaseSound;
     private crashSound3!: Phaser.Sound.BaseSound;
 
-    // UI
-    private scoreText!: Phaser.GameObjects.Text;
-    private gameOverText!: Phaser.GameObjects.Text;
-    private debugText!: Phaser.GameObjects.Text;
-
     constructor() {
         super('Game');
     }
 
-
-    // ========== HELPER METHODS ==========
-
-    /**
-     * Creates a shadow for static scenery (decorations, cacti)
-     * Returns the created shadow image
-     */
-    private createStaticShadow(
-        x: number,
-        y: number,
-        textureName: string,
-        scale: number,
-        offsetX: number = -1,
-        offsetY: number = 1,
-        depth: number = 5
-    ): Phaser.GameObjects.Image {
-        const shadow = this.add.image(x + offsetX, y + offsetY, textureName);
-        shadow.setOrigin(0.5, 1);
-        shadow.setBlendMode(Phaser.BlendModes.DARKEN);
-        shadow.setScale(scale);
-        shadow.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-        shadow.setTint(0x000000);
-        shadow.setAlpha(0.45);
-        shadow.setDepth(depth);
-        return shadow;
-    }
-
-    /**
-     * Creates a shadow for dynamic objects (car, pickup)
-     * Returns the created shadow image with specific settings for moving objects
-     */
-    private createDynamicShadow(
-        x: number,
-        y: number,
-        textureName: string,
-        depth: number = 3
-    ): Phaser.GameObjects.Image {
-        const shadow = this.add.image(x, y, textureName);
-        shadow.setOrigin(0.5, 1); // Anchor at bottom
-        shadow.setTint(0x000000);
-        shadow.setAlpha(0.45);
-        shadow.setBlendMode(Phaser.BlendModes.MULTIPLY);
-        shadow.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-        shadow.setDepth(depth);
-        return shadow;
-    }
-
-    // ========== SCENERY SPAWNING ==========
-/**
- * Spawns collision obstacles (rocks, debris, etc.)
- * Visual sprite is full-height, but collision is ONLY the bottom “base” (Option B).
- * - rock image: no physics
- * - hitbox: static Arcade body (zone) positioned at the bottom of the rock
- */
-private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
-    const config = {
-      count: 9,
-      minSpacing: 145,
-      marginFromEdge: 100,
-      textureRange: { min: 53, max: 60 },
-      texturePrefix: 'tile_',
-      scale: 2.75,
-  
-      shadowScale: 3,
-      shadowOffset: { x: -5, y: 5 },
-      shadowAngle: 130,
-      depth: 5,
-      maxAttempts: 20,
-  
-      // collision tuning (SOURCE pixels)
-      defaultBaseHeightPx: 18,
-      defaultBaseWidthPx: 28,
-      defaultYOffsetPx: -1,
-      hitProfile: {} as Record<string, { baseH?: number; baseW?: number; yAdjust?: number }>
-    };
-  
-    const positions: { x: number, y: number }[] = [...existingPositions];
-  
-    // Ensure group exists
-    if (!this.obstacleHitboxes) {
-      this.obstacleHitboxes = this.physics.add.staticGroup();
-    }
-  
-    for (let i = 0; i < config.count; i++) {
-      const pos = this.findValidSpawnPosition(
-        positions,
-        config.minSpacing,
-        config.marginFromEdge,
-        config.maxAttempts
-      );
-  
-      if (!pos) continue;
-      positions.push(pos);
-  
-      const textureNum = Phaser.Math.Between(config.textureRange.min, config.textureRange.max);
-      const textureName = `${config.texturePrefix}${String(textureNum).padStart(3, '0')}`;
-  
-      // Shadow
-      const shadow = this.createStaticShadow(
-        pos.x, pos.y, textureName,
-        config.shadowScale,
-        config.shadowOffset.x,
-        config.shadowOffset.y,
-        config.depth
-      );
-      shadow.angle = config.shadowAngle;
-  
-      // Visual rock (no physics)
-      const rock = this.add.image(pos.x, pos.y, textureName)
-        .setOrigin(0.5, 0.5)
-        .setScale(config.scale)
-        .setDepth(config.depth);
-  
-      rock.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-  
-      // Hitbox profile
-      const profile = config.hitProfile[textureName] ?? {};
-      const baseH = profile.baseH ?? config.defaultBaseHeightPx;
-      const baseW = profile.baseW ?? config.defaultBaseWidthPx;
-      const yAdjust = profile.yAdjust ??  config.defaultYOffsetPx;
-  
-      // Calculate hitbox size in DISPLAY pixels
-      const srcH = rock.height;           // e.g. 32
-      const displayH = srcH * config.scale;
-  
-      const bodyW = baseW * config.scale;
-      const bodyH = baseH * config.scale;
-  
-      // Bottom of the rock is at pos.y + displayH/2 (because origin is centered)
-      const hitboxY =
-        pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
-  
-      // Invisible collider zone (static)
-      const zone = this.add.zone(pos.x, hitboxY, bodyW, bodyH);
-      this.physics.add.existing(zone, true); // static body
-  
-      // Add to group for collisions + keep reference for near-miss/spawn checks
-      this.obstacleHitboxes.add(zone);
-      this.decorations.push(zone);
-      this.obstacleSprites.push(rock);
-    }
-  
-    return positions;
-  }
-  
-  
-
-    /**
-     * Spawns decorative scenery (cacti, plants, etc.)
-     * These are visual only - car drives through them
-     */
-    private spawnDecorativeScenery(avoidPositions: { x: number, y: number }[] = []) {
-        // Configuration
-        const config = {
-            count: 25,                    // Number of decorative items
-            minSpacingFromObstacles: 15, // Stay away from collision obstacles
-            marginFromEdge: 25,
-            textureRange: { min: 1, max: 7 }, // tree-1 through tree-7
-            texturePrefix: 'tree-',
-            scale: 0.6,                 // Much smaller than obstacles
-            shadowScale: 0.6,
-            shadowOffset: { x: -8, y: 15 },
-            shadowAngle: 130,
-            shadowFlipX: true,
-            depth: 1,                    // Same depth as obstacles for proper layering
-            maxAttempts: 20
-        };
-
-        for (let i = 0; i < config.count; i++) {
-            const pos = this.findValidSpawnPosition(
-                avoidPositions,
-                config.minSpacingFromObstacles,
-                config.marginFromEdge,
-                config.maxAttempts
-            );
-
-            if (!pos) continue;
-
-            // Random decorative texture
-            const textureNum = Phaser.Math.Between(config.textureRange.min, config.textureRange.max);
-            const textureName = `${config.texturePrefix}${textureNum}`;
-
-            // Create shadow
-            const shadow = this.createStaticShadow(
-                pos.x, pos.y, textureName,
-                config.shadowScale,
-                config.shadowOffset.x,
-                config.shadowOffset.y,
-                config.depth - 1 // Slightly behind the sprite
-            );
-            shadow.angle = config.shadowAngle;
-            shadow.setFlipX(config.shadowFlipX);
-
-            // Create decorative item (no physics!)
-            const decorative = this.add.image(pos.x, pos.y, textureName);
-            decorative.setOrigin(0.5, 0.5);
-            decorative.setScale(config.scale);
-            decorative.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-            decorative.setDepth(config.depth);
-        }
-    }
-
-    /**
-     * Finds a valid spawn position that doesn't overlap with existing positions
-     * Returns null if no valid position found after maxAttempts
-     */
-    private findValidSpawnPosition(
-        existingPositions: { x: number, y: number }[],
-        minSpacing: number,
-        marginFromEdge: number,
-        maxAttempts: number
-    ): { x: number, y: number } | null {
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const x = Phaser.Math.Between(marginFromEdge, this.width - marginFromEdge);
-            const y = Phaser.Math.Between(marginFromEdge, this.height - marginFromEdge);
-
-            // Check if position is far enough from all existing positions
-            let valid = true;
-            for (const pos of existingPositions) {
-                const distance = Phaser.Math.Distance.Between(x, y, pos.x, pos.y);
-                if (distance < minSpacing) {
-                    valid = false;
-                    break;
-                }
-            }
-
-            if (valid) return { x, y };
-        }
-
-        return null; // No valid position found
-    }
-
-    // ========== SCENE BUILDING ==========
-
-    private buildIsometricBackground() {
-        const tileWidth = 36 * 1;  // Width of the isometric tile diamond
-        const tileHeight = 16 * 1; // Height of the isometric tile diamond
-
-        // Calculate how many tiles we need
-        const cols = Math.ceil(this.width / (tileWidth / 2)) + 4;
-        const rows = Math.ceil(this.height / (tileHeight / 2)) + 4;
-
-        // Create isometric grid - BASE LAYER
-        for (let row = 0; row < rows; row++) {
-            for (let col = 0; col < cols; col++) {
-                // Random tile from 0-10
-                const tileNum = Phaser.Math.Between(0, 10);
-                const tileName = `tile_${String(tileNum).padStart(3, '0')}`;
-
-                // Isometric position calculation
-                const x = (col - row) * (tileWidth);
-                const y = (col + row) * (tileHeight);
-
-                const tile = this.add.image(x + this.width / 2, y - this.height / 2, tileName);
-                tile.setOrigin(0.5, 0.5);
-                tile.setScale(2);
-                tile.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-                tile.setDepth(0);
-            }
-        }
-
-        // SCENERY GENERATION
-        // Spawn obstacles first (they have collision)
-        const obstaclePositions = this.spawnObstacles();
-
-        // Spawn decorative scenery (avoiding obstacles)
-        this.spawnDecorativeScenery(obstaclePositions);
+    init(data: { sessionConfig?: GameSessionConfig }) {
+        // Accept config from MainMenu, or default to single player
+        this.sessionConfig = data.sessionConfig ?? createSinglePlayerConfig();
+        this.mode = this.sessionConfig.mode;
     }
 
     create() {
-        //set sound and theme
-        // Stop and destroy any existing music before creating new instance
-        if (this.music) {
-            console.log('[MUSIC] Destroying existing music instance');
-            if (this.music.isPlaying) {
-                this.music.stop();
-            }
-            this.music.destroy();
-        }
-        
-        console.log('[MUSIC] Creating new music instance');
-        this.music = this.sound.add('theme2', { loop: true });
-        this.collectSound = this.sound.add('collect-1');
-        this.crashSound1 = this.sound.add('crash-1');
-        this.crashSound2 = this.sound.add('crash-2');
-        this.crashSound3 = this.sound.add('crash-3');
-        
-        // Play music
-        console.log('[MUSIC] Playing music');
-        this.music.play({ volume: this.musicVolume });
-        
         this.width = this.scale.width;
         this.height = this.scale.height;
+        this.players = [];
+        this.gameOver = false;
+        this.timeRemaining = this.startTime;
 
-        this.buildIsometricBackground();
+        // --- Sound & Music ---
+        this.setupAudio();
 
+        // --- Scenery ---
+        this.scenery = new SceneryManager(this, this.width, this.height);
+        this.scenery.buildIsometricBackground();
+
+        // --- Canvas focus ---
         const canvas = this.sys.game.canvas;
         if (canvas && canvas.setAttribute) {
             canvas.setAttribute('tabindex', '1');
@@ -434,139 +95,24 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
 
         this.physics.world.setBounds(0, 0, this.width, this.height);
 
-        this.headSprite = this.add.circle(0, 0, this.headRadius, 0x00ff88, 0);
-        this.physics.add.existing(this.headSprite);
+        // --- Create players ---
+        for (const playerConfig of this.sessionConfig.players) {
+            const player = this.createPlayer(playerConfig);
+            this.players.push(player);
+        }
 
-        const tireGfx = this.add.graphics();
-        tireGfx.fillStyle(0xffffff, 1);
-        tireGfx.fillRect(0, 0, 4, 4);
-        tireGfx.generateTexture('tiremark_dot', 4, 4);
-        tireGfx.destroy();
+        // --- Pickup (shared) ---
+        this.pickup = new PickupManager(this, this.scenery, this.width, this.height);
+        this.pickup.create();
 
-        const tireConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
-            speed: 0,
-            lifespan: 5000,
-            alpha: { start: 0.54, end: 0 },
-            scaleX: { start: 0.8, end: 0.6 },
-            scaleY: { start: 2.5, end: 2 },
-            tint: 0x2a1a0a,
-            emitting: false,
-        };
+        // --- UI ---
+        this.ui = new UIManager(this, this.width, this.height);
+        this.ui.create();
 
-        this.tireEmitterLeft = this.add.particles(0, 0, 'tiremark_dot', { ...tireConfig });
-        this.tireEmitterLeft.setDepth(1);
-
-        this.tireEmitterRight = this.add.particles(0, 0, 'tiremark_dot', { ...tireConfig });
-        this.tireEmitterRight.setDepth(1);
-
-        const flameGfx = this.add.graphics();
-        flameGfx.fillStyle(0xffffff, 1);
-        flameGfx.fillCircle(6, 6, 6);
-        flameGfx.generateTexture('flame_dot', 12, 12);
-        flameGfx.destroy();
-
-        this.boostFlameEmitter = this.add.particles(0, 0, 'flame_dot', {
-            color: [0xfacc22, 0xf89800, 0xf83600, 0x9f0404],
-            colorEase: 'quad.out',
-            lifespan: { min: 200, max: 400 },
-            scale: { start: 0.35, end: 0, ease: 'sine.out' },
-            speed: { min: 30, max: 80 },
-            alpha: { start: 0.8, end: 0 },
-            blendMode: 'ADD',
-            emitting: false,
-        });
-        this.boostFlameEmitter.setDepth(4);
-
-        this.boostSmokeEmitter = this.add.particles(0, 0, 'flame_dot', {
-            color: [0x666666, 0x444444, 0x222222],
-            colorEase: 'linear',
-            lifespan: { min: 400, max: 700 },
-            scale: { start: 0.2, end: 0.5, ease: 'sine.out' },
-            speed: { min: 15, max: 40 },
-            alpha: { start: 0.15, end: 0 },
-            blendMode: 'NORMAL',
-            emitting: false,
-        });
-        this.boostSmokeEmitter.setDepth(3);
-
-        // Handbrake smoke emitters — one per rear tyre, rising lingering smoke
-        const brakeSmokeConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
-            color: [0xcccccc, 0xaaaaaa, 0x888888, 0x666666],
-            colorEase: 'linear',
-            lifespan: { min: 1600, max: 6000 },
-            scale: { start: 0.4, end: 1.6, ease: 'sine.out' },
-            speed: { min: 0, max: 3.5 },
-            alpha: { start: 0.09, end: .04 },
-            gravityY: -12,
-            blendMode: 'NORMAL',
-            emitting: true,
-        };
-
-        this.brakeSmokeEmitterLeft = this.add.particles(0, 0, 'flame_dot', { ...brakeSmokeConfig });
-        this.brakeSmokeEmitterLeft.setDepth(3);
-
-        this.brakeSmokeEmitterRight = this.add.particles(0, 0, 'flame_dot', { ...brakeSmokeConfig });
-        this.brakeSmokeEmitterRight.setDepth(3);
-
-        // Create car shadow using helper
-        this.carShadow = this.createDynamicShadow(0, 0, 'car_000', 3);
-
-        this.carSprite = this.add.image(0, 0, 'car_000').setDepth(4);
-
-        // Create pickup shadow using helper
-        this.pickupShadow = this.createDynamicShadow(0, 0, 'trophy', 3);
-        this.pickupShadow.setDisplaySize(37, 55);
-
-        this.pickupSprite = this.add.image(0, 0, 'trophy').setDepth(4);
-        this.pickupSprite.setDisplaySize(37, 55); // Total ~15% bigger than original 32x47
-
-        // UI — Score
-        this.scoreText = this.add.text(16, 16, 'Score: 0', {
-            fontFamily: 'Arial Black',
-            fontSize: 24,
-            color: '#ffffff',
-            stroke: '#000000',
-            strokeThickness: 4,
-        }).setScrollFactor(0).setDepth(10);
-
-        // Boost gauge bar
-        const barX = 16;
-        const barY = 48;
-        const barW = 120;
-        const barH = 10;
-
-        this.boostBarBg = this.add.graphics().setScrollFactor(0).setDepth(10);
-        this.boostBarBg.fillStyle(0x000000, 0.5);
-        this.boostBarBg.fillRoundedRect(barX, barY, barW, barH, 3);
-        this.boostBarBg.lineStyle(1, 0xffffff, 0.4);
-        this.boostBarBg.strokeRoundedRect(barX, barY, barW, barH, 3);
-
-        this.boostBarFill = this.add.graphics().setScrollFactor(0).setDepth(10);
-
-
-        // Countdown timer display — large, top-centre
-        this.timerText = this.add.text(this.width / 2, 20, '60', {
-            fontFamily: 'Arial Black',
-            fontSize: 48,
-            color: '#ffffff',
-            stroke: '#000000',
-            strokeThickness: 5,
-            align: 'center',
-        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
-
-        this.gameOverText = this.add.text(this.width / 2, this.height / 2 - 60, '', {
-            fontFamily: 'Arial Black',
-            fontSize: 52,
-            color: '#ff3366',
-            stroke: '#000000',
-            strokeThickness: 6,
-            align: 'center',
-        }).setOrigin(0.5).setVisible(false).setScrollFactor(0).setDepth(10);
-
-
-
+        // --- Input ---
         const keyboard = this.input.keyboard;
         keyboard?.on('keydown-R', () => this.tryRestart());
+        keyboard?.on('keydown-ESC', () => this.backToMenu());
 
         this.input.on('pointerdown', () => {
             if (!this.gameOver) {
@@ -574,125 +120,150 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             }
         });
 
-        // --- Debug Tools button (top-right) ---
-        this.debugBtn = this.add.text(this.width - 16, 16, 'Debug Tools', {
-            fontFamily: 'Arial',
-            fontSize: 16,
-            color: '#ffffff',
-            backgroundColor: '#555555',
-            padding: { x: 10, y: 6 },
-        }).setOrigin(1, 0).setScrollFactor(0).setDepth(30)
-            .setInteractive({ useHandCursor: true });
-        this.debugBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            this.toggleDebugModal();
+        // --- Sound Manager ---
+        this.setupSoundManager();
+
+        // --- Debug Modal (uses player 1's car for tuning) ---
+        this.debug = new DebugModal(this, this.width, this.height);
+        this.debug.create({
+            car: this.players[0].car,
+            soundManager: this.soundManager,
+            music: this.music,
+            musicVolume: this.musicVolume,
+            musicMuted: this.musicMuted,
+            onMusicMuteToggle: (muted) => { this.musicMuted = muted; },
+            onEndRun: () => {
+                if (!this.gameOver) {
+                    this.timeRemaining = 0;
+                    this.endGame();
+                }
+            },
         });
 
-        this.buildDebugModal();
+        // --- Collisions (each player vs obstacles) ---
+        for (const player of this.players) {
+            this.physics.add.collider(
+                player.car.headSprite,
+                this.scenery.obstacleHitboxes,
+                (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
+            );
+        }
 
+        // --- Player-vs-player collision in battle mode ---
+        if (this.mode === 'battle' && this.players.length >= 2) {
+            this.physics.add.collider(
+                this.players[0].car.headSprite,
+                this.players[1].car.headSprite
+            );
+        }
 
+        // Delay first pickup spawn
+        this.time.delayedCall(1000, () => { this.pickup.spawn(); });
+    }
 
-        // --- Sound setup ---
-        // CRITICAL: Destroy old SoundManager to prevent overlapping audio instances
+    // ========== PLAYER FACTORY ==========
+
+    private createPlayer(config: PlayerConfig): PlayerState {
+        const spritePrefix = config.spritePrefix ?? 'car-1';
+        const car = new CarController(this, this.width, this.height, config.keys, config.id, spritePrefix);
+
+        // Create car physics body (invisible rectangle hitbox)
+        car.headSprite = this.add.rectangle(0, 0, car.hitboxWidth, car.hitboxHeight, 0x00ff88, 0) as unknown as Phaser.GameObjects.Arc;
+        this.physics.add.existing(car.headSprite);
+
+        // Set the physics body to match the rectangle size
+        const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
+        body.setSize(car.hitboxWidth, car.hitboxHeight);
+        body.setOffset(-car.hitboxWidth / 2, -car.hitboxHeight / 2);
+
+        // Create car visuals using player's sprite set
+        const initialFrame = `${spritePrefix}_000`;
+        car.carShadow = this.scenery.createDynamicShadow(0, 0, initialFrame, 3);
+        car.carSprite = this.add.image(0, 0, initialFrame).setDepth(4);
+
+        // Setup physics body
+     
+        body.setCollideWorldBounds(false);
+        body.setBounce(0.3, 0.3);
+        body.setMaxVelocity(car.boostMaxSpeed, car.boostMaxSpeed);
+        body.setDamping(true);
+        body.setDrag(car.drag, car.drag);
+
+        // Find safe spawn position — offset players in battle mode
+        let spawnX = this.width / 2;
+        let spawnY = this.height / 2;
+        if (this.mode === 'battle') {
+            const offset = 120;
+            spawnX = config.id === 1 ? this.width / 2 - offset : this.width / 2 + offset;
+        }
+        const spawnPos = this.scenery.findSafePosition(spawnX, spawnY, 100);
+        car.headSprite.setPosition(spawnPos.x, spawnPos.y);
+        car.headAngle = 0;
+
+        // Create particles for this player
+        const particles = new ParticleEffects(this);
+        particles.create();
+
+        return {
+            config,
+            car,
+            particles,
+            score: 0,
+            lastCollisionTime: 0,
+            crashSoundPlays: 0,
+            crashSoundCooldownUntil: 0,
+            accelStopTimer: 0,
+        };
+    }
+
+    // ========== AUDIO SETUP ==========
+
+    private setupAudio() {
+        if (this.music) {
+            if (this.music.isPlaying) { this.music.stop(); }
+            this.music.destroy();
+        }
+
+        this.music = this.sound.add('theme2', { loop: true });
+        this.collectSound = this.sound.add('collect-1');
+        this.crashSound1 = this.sound.add('crash-1');
+        this.crashSound2 = this.sound.add('crash-2');
+        this.crashSound3 = this.sound.add('crash-3');
+
+        this.music.play({ volume: this.musicVolume });
+    }
+
+    private setupSoundManager() {
         if (this.soundManager) {
-            console.log('[SOUND] Destroying old SoundManager');
             this.soundManager.destroy();
         }
-        
-        console.log('[SOUND] Creating new SoundManager');
+
         this.soundManager = new SoundManager(this);
         this.soundManager.addLayer('screech', 'screech_sfx', {
-            loop: true,
-            maxVolume: 1,
-            fadeIn: 4,
-            fadeOut: 7.5,
-            seekStart: 1.85,
+            loop: true, maxVolume: 1, fadeIn: 4, fadeOut: 7.5, seekStart: 1.85,
         });
-
         this.soundManager.addCrossfadeLayer('engine', 'engine_sfx', {
-            maxVolume: 0.25,
-            crossfadeDuration: 2.5,
-            crossfadeAt: 0.75,
+            maxVolume: 0.25, crossfadeDuration: 2.5, crossfadeAt: 0.75,
         });
-
         this.soundManager.addLayer('stopping', 'stopping_sfx', {
-            loop: false,
-            maxVolume: 0.28,
-            fadeIn: 4,
-            fadeOut: 12,
-            seekStart: 0,
-            maxDuration: 3.5,
-            segmentFadeOut: 1.0,
+            loop: false, maxVolume: 0.28, fadeIn: 4, fadeOut: 12, seekStart: 0, maxDuration: 3.5, segmentFadeOut: 1.0,
         });
-
         this.soundManager.addLayer('nitro', 'nitro_sfx', {
-            loop: true,
-            maxVolume: 0.7,
-            fadeIn: 6,
-            fadeOut: 12,
-            seekStart: 0,
+            loop: true, maxVolume: 0.7, fadeIn: 6, fadeOut: 12, seekStart: 0,
         });
+    }
 
-        // Initialize car position and physics
-        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setCollideWorldBounds(false); // Re-enabled: car bounces off walls
-        body.setBounce(0.3, 0.3); // Increased bounce to prevent sticking
-        body.setMaxVelocity(this.boostMaxSpeed, this.boostMaxSpeed);
-        body.setDamping(true);
-        body.setDrag(this.drag, this.drag);
+    // ========== COLLISION ==========
 
+    private handlePlayerCollision(player: PlayerState, obstacle: any) {
+        const now = this.time.now;
+        if (now - player.lastCollisionTime < this.collisionCooldown) return;
+        player.lastCollisionTime = now;
 
-        
-   
+        const speedAtImpact = player.car.handleCollision(obstacle);
 
-
-        // Add collision callback for crunchy crash feedback
-        this.physics.add.collider(this.headSprite, this.obstacleHitboxes, (car: any, obstacle: any) => {
-
-            // Only apply slowdown once per cooldown period
-            const now = this.time.now;
-            if (now - this.lastCollisionTime < this.collisionCooldown) {
-                return; // Still in cooldown, ignore this collision
-            }
-            this.lastCollisionTime = now;
-            
-            // Capture speed before impact for sound selection
-            const speedAtImpact = Math.abs(this.currentSpeed);
-
-            // DRAMATIC speed loss for crunchy crash feel
-            this.currentSpeed *= 0.2; // Lose 80% of speed
-
-            // Calculate bounce direction (away from obstacle)
-            const carBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
-
-            const dx = this.headSprite.x - obstacle.x;
-            const dy = this.headSprite.y - obstacle.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-
-            if (distance > 0) {
-                // Normalize direction
-                const dirX = dx / distance;
-                const dirY = dy / distance;
-
-                // Variable bounce force based on speed - higher bounce at low speeds
-                let bounceForce;
-                if (speedAtImpact < 75) {
-                    bounceForce = 320; // Strong bounce at very low speeds
-                } else if (speedAtImpact < 175) {
-                    bounceForce = 280; // Good bounce at low-medium speeds
-                } else if (speedAtImpact < 275) {
-                    bounceForce = 250; // Standard bounce at medium speeds
-                } else {
-                    bounceForce = 230; // Slightly reduced bounce at high speeds
-                }
-
-                carBody.setVelocity(dirX * bounceForce, dirY * bounceForce);
-            }
-
-            // Play crash sound based on impact speed
-            // Low speed (0-100): crash-1
-            // Medium speed (100-200): crash-2
-            // High speed (200+): crash-3
+        // Rate-limited crash sound
+        if (now >= player.crashSoundCooldownUntil) {
             if (speedAtImpact < 200) {
                 this.crashSound1.play({ volume: 0.5 });
             } else if (speedAtImpact < 300) {
@@ -700,427 +271,25 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             } else {
                 this.crashSound3.play({ volume: 0.7 });
             }
-        });
 
-        // Find safe spawn position away from obstacles
-        let carX = this.width / 2;
-        let carY = this.height / 2;
-        const minDistanceFromObstacles = 100;
-        let attempts = 0;
-        let validPosition = false;
-        
-
-        while (!validPosition && attempts < 50) {
-            validPosition = true;
-            for (const obstacle of this.decorations) {
-                const dist = Phaser.Math.Distance.Between(carX, carY, obstacle.x, obstacle.y);
-                if (dist < minDistanceFromObstacles) {
-                    validPosition = false;
-                    // Try a new random position
-                    carX = 100 + Math.random() * (this.width - 200);
-                    carY = 100 + Math.random() * (this.height - 200);
-                    break;
-                }
+            player.crashSoundPlays++;
+            if (player.crashSoundPlays >= this.crashSoundMaxPlays) {
+                player.crashSoundCooldownUntil = now + this.crashSoundCooldown;
+                player.crashSoundPlays = 0;
             }
-            attempts++;
-        }
-
-        this.headSprite.setPosition(carX, carY);
-        this.headAngle = 0;
-        
-
-        // Delay first pickup spawn
-        this.time.delayedCall(1000, () => {
-            this.spawnPickup();
-        });
-    }
-
-    private buildDebugModal() {
-        const modalW = 280;
-        const modalH = 500; // Adjusted for removed trick debug buttons
-        const mx = (this.width - modalW) / 2;
-        const my = (this.height - modalH) / 2;
-
-        this.debugModalContainer = this.add.container(0, 0).setScrollFactor(0).setDepth(50).setVisible(false);
-
-        const backdrop = this.add.rectangle(this.width / 2, this.height / 2, this.width, this.height, 0x000000, 0.5);
-        backdrop.setInteractive();
-        backdrop.on('pointerdown', (pointer: Phaser.Input.Pointer) => { pointer.event.stopPropagation(); });
-        this.debugModalContainer.add(backdrop);
-
-        const panel = this.add.graphics();
-        panel.fillStyle(0x222222, 0.95);
-        panel.fillRoundedRect(mx, my, modalW, modalH, 10);
-        panel.lineStyle(2, 0x666666, 1);
-        panel.strokeRoundedRect(mx, my, modalW, modalH, 10);
-        this.debugModalContainer.add(panel);
-
-        const title = this.add.text(this.width / 2, my + 18, 'Debug Tools', {
-            fontFamily: 'Arial Black', fontSize: 20, color: '#ffffff', align: 'center',
-        }).setOrigin(0.5, 0);
-        this.debugModalContainer.add(title);
-
-        const closeBtn = this.add.text(mx + modalW - 14, my + 10, 'X', {
-            fontFamily: 'Arial Black', fontSize: 18, color: '#ff4444',
-            padding: { x: 6, y: 2 },
-        }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
-        closeBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            this.toggleDebugModal();
-        });
-        this.debugModalContainer.add(closeBtn);
-
-        const btnStyle = {
-            fontFamily: 'Arial',
-            fontSize: 15,
-            color: '#ffffff',
-            backgroundColor: '#444444',
-            padding: { x: 8, y: 4 },
-        };
-
-        let cy = my + 55;
-        const rowH = 34;
-        const leftCol = mx + 14;
-        const rightCol = mx + modalW - 14;
-
-        const makeRow = (label: string, onMinus: () => void, onPlus: () => void) => {
-            const lbl = this.add.text(this.width / 2, cy, label, {
-                fontFamily: 'Arial', fontSize: 15, color: '#cccccc',
-            }).setOrigin(0.5, 0);
-            this.debugModalContainer.add(lbl);
-
-            const minus = this.add.text(leftCol, cy, '\u2212', { ...btnStyle, padding: { x: 12, y: 4 } })
-                .setInteractive({ useHandCursor: true });
-            minus.on('pointerdown', (pointer: Phaser.Input.Pointer) => { pointer.event.stopPropagation(); onMinus(); });
-            this.debugModalContainer.add(minus);
-
-            const plus = this.add.text(rightCol, cy, '+', { ...btnStyle, padding: { x: 12, y: 4 } })
-                .setOrigin(1, 0).setInteractive({ useHandCursor: true });
-            plus.on('pointerdown', (pointer: Phaser.Input.Pointer) => { pointer.event.stopPropagation(); onPlus(); });
-            this.debugModalContainer.add(plus);
-
-            cy += rowH;
-            return lbl;
-        };
-
-        this.debugThrustLabel = makeRow(`Thrust: ${this.forwardThrust}`,
-            () => { this.forwardThrust = Math.max(this.forwardThrust - 40, 80); this.refreshDebugLabels(); },
-            () => { this.forwardThrust = Math.min(this.forwardThrust + 40, 800); this.refreshDebugLabels(); },
-        );
-        this.debugDragLabel = makeRow(`Drag: ${this.drag}`,
-            () => { this.drag = Math.max(this.drag - 20, 0); this.refreshDebugLabels(); },
-            () => { this.drag = Math.min(this.drag + 20, 400); this.refreshDebugLabels(); },
-        );
-        this.debugMaxSpdLabel = makeRow(`Max Spd: ${this.maxSpeed}`,
-            () => { this.maxSpeed = Math.max(this.maxSpeed - 30, 80); this.refreshDebugLabels(); },
-            () => { this.maxSpeed = Math.min(this.maxSpeed + 30, 600); this.refreshDebugLabels(); },
-        );
-
-        cy += 8;
-
-        const musicBtn = this.add.text(this.width / 2, cy, '\u266B Music: ON', {
-            ...btnStyle, padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        musicBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            this.musicMuted = !this.musicMuted;
-            if (this.music) {
-                if (this.musicMuted) {
-                    (this.music as Phaser.Sound.WebAudioSound).setVolume(0);
-                    musicBtn.setText('\u266B Music: OFF');
-                } else {
-                    (this.music as Phaser.Sound.WebAudioSound).setVolume(this.musicVolume);
-                    musicBtn.setText('\u266B Music: ON');
-                }
-            }
-        });
-        this.debugModalContainer.add(musicBtn);
-        cy += rowH + 4;
-
-        const sfxBtn = this.add.text(this.width / 2, cy, '\u{1F50A} SFX: ON', {
-            ...btnStyle, padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        sfxBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            this.soundManager.muted = !this.soundManager.muted;
-            if (this.soundManager.muted) {
-                sfxBtn.setText('\u{1F507} SFX: OFF');
-            } else {
-                sfxBtn.setText('\u{1F50A} SFX: ON');
-            }
-        });
-        this.debugModalContainer.add(sfxBtn);
-
-        cy += rowH + 4;
-
-        const boundsBtn = this.add.text(this.width / 2, cy, 'Screen Bounce: ON', {
-            ...btnStyle, padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        boundsBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-            const currentState = body.collideWorldBounds;
-            body.setCollideWorldBounds(!currentState);
-            if (!currentState) {
-                boundsBtn.setText('Screen Bounce: ON');
-            } else {
-                boundsBtn.setText('Screen Bounce: OFF');
-            }
-        });
-        this.debugModalContainer.add(boundsBtn);
-
-        cy += rowH + 4;
-
-        const hitboxBtn = this.add.text(this.width / 2, cy, 'Show Hitboxes: OFF', {
-            ...btnStyle, padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        hitboxBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            if (this.physics.world.debugGraphic) {
-                // Disable debug graphics
-                this.physics.world.debugGraphic.clear();
-                this.physics.world.debugGraphic.destroy();
-                this.physics.world.debugGraphic = null as any;
-                hitboxBtn.setText('Show Hitboxes: OFF');
-            } else {
-                // Enable debug graphics
-                this.physics.world.createDebugGraphic();
-                hitboxBtn.setText('Show Hitboxes: ON');
-            }
-        });
-        this.debugModalContainer.add(hitboxBtn);
-
-        cy += rowH + 4;
-
-        const collisionBtn = this.add.text(this.width / 2, cy, 'Collisions: ON', {
-            ...btnStyle, padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        collisionBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            const colliders = this.physics.world.colliders.getActive();
-            if (colliders.length > 0 && colliders[0].active) {
-                // Disable all collisions
-                colliders.forEach((collider: any) => {
-                    collider.active = false;
-                });
-                collisionBtn.setText('Collisions: OFF');
-            } else {
-                // Enable all collisions
-                colliders.forEach((collider: any) => {
-                    collider.active = true;
-                });
-                collisionBtn.setText('Collisions: ON');
-            }
-        });
-        this.debugModalContainer.add(collisionBtn);
-
-        cy += rowH + 4;
-
-        const endRunBtn = this.add.text(this.width / 2, cy, 'End Run', {
-            ...btnStyle, backgroundColor: '#aa3333', padding: { x: 16, y: 6 },
-        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
-        endRunBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            pointer.event.stopPropagation();
-            if (!this.gameOver) {
-                this.toggleDebugModal();
-                this.timeRemaining = 0;
-                this.endGame();
-            }
-        });
-        this.debugModalContainer.add(endRunBtn);
-
-        cy += rowH + 4;
-
-        this.debugText = this.add.text(this.width / 2, cy, '', {
-            fontFamily: 'Arial',
-            fontSize: 14,
-            color: '#888888',
-        }).setOrigin(0.5, 0);
-        this.debugModalContainer.add(this.debugText);
-    }
-
-    private refreshDebugLabels() {
-        this.debugThrustLabel.setText(`Thrust: ${this.forwardThrust}`);
-        this.debugDragLabel.setText(`Drag: ${this.drag}`);
-        this.debugMaxSpdLabel.setText(`Max Spd: ${this.maxSpeed}`);
-    }
-
-    private toggleDebugModal() {
-        this.debugModalOpen = !this.debugModalOpen;
-        this.debugModalContainer.setVisible(this.debugModalOpen);
-    }
-
-    private resetGame() {
-        this.headAngle = -Math.PI / 2;
-        this.angularVel = 0;
-        this.score = 0;
-        this.gameOver = false;
-        this.timeRemaining = this.startTime;
-        this.boostFuel = this.boostMax;
-        this.boostIntensity = 0;
-        this.boostBarDisplay = this.boostMax;
-        this.tireMarkIntensity = 0;
-        if (this.soundManager) this.soundManager.stopAll();
-
-        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-
-        // Find safe spawn position away from obstacles
-        let carX = this.width / 2;
-        let carY = this.height / 2;
-        const minDistanceFromObstacles = 100;
-        let attempts = 0;
-        let validPosition = false;
-
-        while (!validPosition && attempts < 50) {
-            validPosition = true;
-            for (const obstacle of this.decorations) {
-                const dist = Phaser.Math.Distance.Between(carX, carY, obstacle.x, obstacle.y);
-                if (dist < minDistanceFromObstacles) {
-                    validPosition = false;
-                    // Try a new random position
-                    carX = 100 + Math.random() * (this.width - 200);
-                    carY = 100 + Math.random() * (this.height - 200);
-                    break;
-                }
-            }
-            attempts++;
-        }
-
-        this.headSprite.setPosition(carX, carY);
-        body.reset(carX, carY);
-        body.setVelocity(0, 0);
-        body.setMaxSpeed(this.maxSpeed);
-        body.setDrag(0, 0);
-        this.currentSpeed = this.minSpeed;
-
-        this.tireEmitterLeft.killAll();
-        this.tireEmitterRight.killAll();
-        this.boostFlameEmitter.killAll();
-        this.boostSmokeEmitter.killAll();
-        this.brakeSmokeEmitterLeft.killAll();
-        this.brakeSmokeEmitterRight.killAll();
-
-        // Delay pickup spawn until car lands
-        this.time.delayedCall(1000, () => {
-            this.spawnPickup();
-        });
-
-        this.gameOverText.setVisible(false);
-        if (this.timerText) this.timerText.setVisible(true);
-        if (this.finalScoreText) { this.finalScoreText.destroy(); this.finalScoreText = undefined; }
-        if (this.playAgainBtn) { this.playAgainBtn.destroy(); this.playAgainBtn = undefined; }
-
-        // Restore music volume after game-over fade
-        if (this.music && !this.musicMuted) {
-            this.tweens.killTweensOf(this.music);
-            (this.music as Phaser.Sound.WebAudioSound).setVolume(this.musicVolume);
         }
     }
 
-    private spawnPickup() {
-        const margin = 40;
-        const minDistanceFromObstacles = 100; // Trophy won't spawn within this distance of obstacles
-        let attempts = 0;
-        let validPosition = false;
-
-        // Try to find a valid position away from obstacles
-        while (!validPosition && attempts < 50) {
-            this.pickupX = margin + Math.random() * (this.width - 2 * margin);
-            this.pickupY = margin + Math.random() * (this.height - 2 * margin);
-
-            // Check distance from all obstacles
-            validPosition = true;
-            for (const obstacle of this.decorations) {
-                const dist = Phaser.Math.Distance.Between(
-                    this.pickupX,
-                    this.pickupY,
-                    obstacle.x,
-                    obstacle.y
-                );
-
-                if (dist < minDistanceFromObstacles) {
-                    validPosition = false;
-                    break;
-                }
-            }
-
-            attempts++;
-        }
-
-        // If we couldn't find a valid position after 50 tries, just use the last position
-        // (Better than infinite loop)
-
-        const dropHeight = 40;
-        const dropDuration = 450;
-        const bounceDuration = 130;
-        const bounceHeight = 4;
-
-        if (this.pickupSprite) {
-            this.tweens.killTweensOf(this.pickupSprite);
-            this.pickupSprite.setPosition(this.pickupX, this.pickupY - dropHeight);
-            this.pickupSprite.setAlpha(0);
-
-            this.tweens.add({
-                targets: this.pickupSprite,
-                y: this.pickupY,
-                alpha: 1,
-                duration: dropDuration,
-                ease: 'Quad.easeIn',
-                onComplete: () => {
-                    this.tweens.add({
-                        targets: this.pickupSprite,
-                        y: this.pickupY - bounceHeight,
-                        duration: bounceDuration,
-                        ease: 'Sine.easeOut',
-                        yoyo: true,
-                    });
-                },
-            });
-        }
-        if (this.pickupShadow) {
-            this.tweens.killTweensOf(this.pickupShadow);
-            this.pickupShadow.setPosition(this.pickupX - 4, this.pickupY + 7); // Same offset as car
-            this.pickupShadow.angle = 130; // Same angle as car/decorations
-            this.pickupShadow.setAlpha(0);
-            this.pickupShadow.setFlipX(true)
-            this.tweens.add({
-                targets: this.pickupShadow,
-                alpha: 0.55, // Match the alpha we set in creation
-                duration: dropDuration,
-                ease: 'Linear',
-            });
-        }
-    }
-
-    private tryRestart() {
-        // Full page reload to completely clean up all state
-        console.log('[GAME] Full reload initiated');
-        window.location.reload();
-    }
+    // ========== UPDATE LOOP ==========
 
     update(_time: number, delta: number) {
         const dt = delta / 1000;
 
-        // --- Game-over coasting: car rolls to a stop, sprite keeps updating ---
+        // --- Game-over coasting ---
         if (this.gameOver) {
-            const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-            const coastDamp = 1 - 1.5 * dt;
-            body.velocity.x *= Math.max(coastDamp, 0);
-            body.velocity.y *= Math.max(coastDamp, 0);
-            if (body.speed < 2) { body.setVelocity(0, 0); body.setAcceleration(0, 0); }
-
-            this.physics.world.wrap(this.headSprite, 0);
-            const hx = this.headSprite.x;
-            const hy = this.headSprite.y;
-            let angleDeg = (this.headAngle * 180 / Math.PI) % 360;
-            if (angleDeg < 0) angleDeg += 360;
-            const frameIndex = Math.round(angleDeg / (360 / this.totalCarFrames)) % this.totalCarFrames;
-            const frameKey = `car_${String(frameIndex).padStart(3, '0')}`;
-            this.carSprite.setTexture(frameKey);
-            this.carSprite.setPosition(hx, hy);
-            this.carShadow.setTexture(frameKey);
-            this.carShadow.setScale(0.95, 1);
-            this.carShadow.setPosition(hx + 4, hy + 58); // Match normal gameplay shadow
+            for (const player of this.players) {
+                player.car.updateGameOver(dt);
+            }
             this.soundManager.update(dt);
             return;
         }
@@ -1132,578 +301,133 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             this.endGame();
             return;
         }
-        const displaySec = Math.ceil(this.timeRemaining);
-        this.timerText.setText(`${displaySec}`);
-        if (this.timeRemaining <= 10) {
-            this.timerText.setColor('#ff4444');
-            this.timerText.setFontSize(56);
+        this.ui.updateTimer(this.timeRemaining);
+
+        // --- Update each player ---
+        for (const player of this.players) {
+            this.updatePlayer(player, dt);
+        }
+
+        // --- Sound (driven by player 1 for now) ---
+        this.updateSound(this.players[0], dt);
+
+        // --- Score display ---
+        if (this.mode === 'single') {
+            this.ui.updateScore(this.players[0].score);
         } else {
-            this.timerText.setColor('#ffffff');
-            this.timerText.setFontSize(48);
+            this.ui.updateScore(this.players[0].score, this.players[1]?.score);
         }
 
-        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setMaxSpeed(this.maxSpeed);
+        // --- Debug ---
+        const speed = (this.players[0].car.headSprite.body as Phaser.Physics.Arcade.Body).speed;
+        this.debug.updateDebugText(speed);
 
-        // --- Input ---
-        const keyboard = this.input.keyboard;
-        let turnInput = 0;
-        let thrustInput = false;
-        let brakeInput = false;
-        let reverseInput = false;
-        if (keyboard) {
-            const left = keyboard.addKey('LEFT', false, false);
-            const right = keyboard.addKey('RIGHT', false, false);
-            const up = keyboard.addKey('UP', false, false);
-            const down = keyboard.addKey('DOWN', false, false);
-            const a = keyboard.addKey('A', false, false);
-            const d = keyboard.addKey('D', false, false);
-            const w = keyboard.addKey('W', false, false);
-            const s = keyboard.addKey('S', false, false);
-            const shift = keyboard.addKey('SHIFT', false, false);
-            const space = keyboard.addKey('SPACE', false, false);
-            if (left.isDown || a.isDown) turnInput -= 1;
-            if (right.isDown || d.isDown) turnInput += 1;
-            if (up.isDown || w.isDown) this.isAccelerating = true;
-            else this.isAccelerating = false;
-            if (down.isDown || s.isDown) reverseInput = true;
-            if (shift.isDown) thrustInput = true;
-            if (space.isDown) brakeInput = true;
-        }
-
-        // --- REVERSE - Only works when completely stopped ---
-        if (reverseInput && this.currentSpeed <= 0) {
-            // Stopped - allow reversing
-            this.currentSpeed = Math.max(this.currentSpeed - this.reverseAccel * dt * 60, this.maxReverseSpeed);
-
-            const facingX = Math.cos(this.headAngle);
-            const facingY = Math.sin(this.headAngle);
-
-            // Directly set velocity to reverse
-            body.setVelocity(facingX * this.currentSpeed, facingY * this.currentSpeed);
-            body.setAcceleration(0, 0);
-
-            // Allow steering while reversing - but much slower/wider turns
-            if (turnInput !== 0) {
-                const speedFactor = Math.abs(this.currentSpeed) / this.maxSpeed;
-                // Drastically reduce turn rate for wide turning circle
-                const adjustedTurnRate = this.targetAngularVel * 0.25; // Much slower than forward
-                // Very slow turning response
-                this.angularVel += (turnInput * adjustedTurnRate - this.angularVel) * 0.05;
-            } else {
-                this.angularVel *= 0.95; // Damping
-            }
-
-            this.headAngle += this.angularVel * dt;
-
-            // Update visual position
-            const hx = this.headSprite.x;
-            const hy = this.headSprite.y;
-
-            let angleDeg = (this.headAngle * 180 / Math.PI) % 360;
-            if (angleDeg < 0) angleDeg += 360;
-            const frameIndex = Math.round(angleDeg / (360 / this.totalCarFrames)) % this.totalCarFrames;
-            const frameKey = `car_${String(frameIndex).padStart(3, '0')}`;
-            this.carSprite.setTexture(frameKey);
-            this.carSprite.setPosition(hx, hy);
-            this.carShadow.setTexture(frameKey);
-            this.carShadow.setScale(0.95, 1);
-            this.carShadow.setPosition(hx + 4, hy + 58);
-
-            this.soundManager.update(dt);
-            return; // Only skip physics when actually reversing
-        }
-
-        // Coast to stop if just released reverse - VERY slow deceleration
-        if (this.currentSpeed < 0) {
-            // Much slower coast - only 0.5x the reverse accel rate
-            this.currentSpeed = Math.min(this.currentSpeed + this.reverseAccel * 0.5 * dt * 60, 0);
-
-            const facingX = Math.cos(this.headAngle);
-            const facingY = Math.sin(this.headAngle);
-            body.setVelocity(facingX * this.currentSpeed, facingY * this.currentSpeed);
-            body.setAcceleration(0, 0);
-
-            // Update visuals during coast
-            const hx = this.headSprite.x;
-            const hy = this.headSprite.y;
-
-            let angleDeg = (this.headAngle * 180 / Math.PI) % 360;
-            if (angleDeg < 0) angleDeg += 360;
-            const frameIndex = Math.round(angleDeg / (360 / this.totalCarFrames)) % this.totalCarFrames;
-            const frameKey = `car_${String(frameIndex).padStart(3, '0')}`;
-            this.carSprite.setTexture(frameKey);
-            this.carSprite.setPosition(hx, hy);
-            this.carShadow.setTexture(frameKey);
-            this.carShadow.setScale(0.95, 1);
-            this.carShadow.setPosition(hx + 4, hy + 58);
-
-            this.soundManager.update(dt);
-            return; // Skip normal physics during coast
-        }
-
-        // --- Smooth steering (speed-dependent) ---
-        const speedRatio = Math.min(body.speed / this.maxSpeed, 1);
-        const steerScale = this.minSteerFraction + (1 - this.minSteerFraction) * speedRatio;
-
-        // Speed-based steering adjustment - slower at low speeds, faster at high speeds
-        const speedFactor = this.currentSpeed / this.maxSpeed;
-        const adjustedTurnRate = this.targetAngularVel * (0.6 + 0.4 * speedFactor);
-
-        const targetAV = turnInput * adjustedTurnRate * steerScale;
-        const smoothRate = turnInput !== 0 ? this.steerSmoothing : this.returnSmoothing;
-        const lerpFactor = 1 - Math.exp(-smoothRate * dt);
-        this.angularVel += (targetAV - this.angularVel) * lerpFactor;
-
-        const currentSpeed = body.speed;
-        if (currentSpeed > 1) {
-            const velAngle = Math.atan2(body.velocity.y, body.velocity.x);
-            let drift = this.headAngle - velAngle;
-            while (drift > Math.PI) drift -= Math.PI * 2;
-            while (drift < -Math.PI) drift += Math.PI * 2;
-
-            const softStart = this.maxDriftAngle - this.driftSoftness;
-            const absDrift = Math.abs(drift);
-            if (absDrift > softStart) {
-                const resistance = Math.min((absDrift - softStart) / this.driftSoftness, 1);
-                const pushback = resistance * resistance * 8 * dt;
-                if (drift > 0) {
-                    this.angularVel -= pushback;
-                    this.angularVel = Math.max(this.angularVel, -this.targetAngularVel);
-                } else {
-                    this.angularVel += pushback;
-                    this.angularVel = Math.min(this.angularVel, this.targetAngularVel);
-                }
-            }
-        }
-
-        this.headAngle += this.angularVel * dt;
-
-        // Slight rotation damping to prevent excessive spinning
-        this.angularVel *= 0.95;
-
-        // --- Drift physics ---
-        const facingX = Math.cos(this.headAngle);
-        const facingY = Math.sin(this.headAngle);
-
-        if (Math.abs(currentSpeed) > 1) {
-            const velDirX = body.velocity.x / currentSpeed;
-            const velDirY = body.velocity.y / currentSpeed;
-            const blend = 1 - Math.exp(-this.gripRate * dt);
-            const newDirX = velDirX + (facingX - velDirX) * blend;
-            const newDirY = velDirY + (facingY - velDirY) * blend;
-            const dirLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
-            if (dirLen > 0.001) {
-                body.velocity.x = (newDirX / dirLen) * currentSpeed;
-                body.velocity.y = (newDirY / dirLen) * currentSpeed;
-            }
-        } else {
-            // At very low speeds (including reverse start), directly set velocity
-            body.velocity.x = facingX * this.currentSpeed;
-            body.velocity.y = facingY * this.currentSpeed;
-        }
-
-        // --- Acceleration / Deceleration ---
-        if (this.isAccelerating) {
-            // Non-linear acceleration - smooth ramp up with gradual tapering
-            const speedRatio = this.currentSpeed / this.maxSpeed;
-            // Smoother curve - acceleration falls off more gradually
-            const accelCurve = 1.0 - (speedRatio * speedRatio * 0.7); // Increased from 0.6 to 0.7 for slightly longer ramp
-            const effectiveAccel = this.acceleration * accelCurve;
-            this.currentSpeed = Math.min(this.currentSpeed + effectiveAccel * dt * 60, this.maxSpeed);
-        } else {
-            // No input - coast to zero
-            if (this.currentSpeed > 0) {
-                // Moving forward - slow down
-                const momentum = this.currentSpeed * this.decelMomentumFactor;
-                const decelRate = Math.max(this.decelBase - momentum, 0.3);
-                this.currentSpeed = Math.max(this.currentSpeed - decelRate * dt * 60, 0);
-            } else if (this.currentSpeed < 0) {
-                // Moving backward - slow down toward zero
-                this.currentSpeed = Math.min(this.currentSpeed + this.reverseAccel * 2 * dt * 60, 0);
-            }
-        }
-
-        // --- Thrust / Handbrake ---
-        const brakeMinSpeed = this.minSpeed * 0.4;
-
-        if (brakeInput) {
-            // Enhanced drift turning during handbrake
-            const driftTurnBoost = 2.0;
-            if (turnInput !== 0) {
-                this.angularVel += turnInput * driftTurnBoost * dt;
-            }
-
-            body.setAcceleration(facingX * this.forwardThrust * 0.2, facingY * this.forwardThrust * 0.2);
-            const brakeDamp = 1 - this.brakeFactor * dt * 2.5;
-            body.velocity.x *= brakeDamp;
-            body.velocity.y *= brakeDamp;
-
-            const curSpd = body.speed;
-            if (curSpd > 0 && curSpd < brakeMinSpeed) {
-                body.velocity.x *= brakeMinSpeed / curSpd;
-                body.velocity.y *= brakeMinSpeed / curSpd;
-            }
-        } else {
-            const wantsBoost = thrustInput && this.boostFuel > 0;
-            if (wantsBoost) {
-                this.boostIntensity = Math.min(1, this.boostIntensity + this.boostRampUp * dt);
-                this.boostFuel = Math.max(0, this.boostFuel - this.boostDrainRate * dt);
-            } else {
-                this.boostIntensity = Math.max(0, this.boostIntensity - this.boostRampDown * dt);
-            }
-
-            const t = this.boostIntensity;
-            const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * t;
-            const activeMaxSpeed = this.currentSpeed + (this.boostMaxSpeed - this.currentSpeed) * t;
-
-            body.setMaxSpeed(activeMaxSpeed);
-
-            // Only apply forward thrust if actually accelerating (not reversing)
-            if (this.isAccelerating || this.currentSpeed > 0) {
-                body.setAcceleration(facingX * thrust, facingY * thrust);
-            } else {
-                body.setAcceleration(0, 0); // No thrust when reversing or stopped
-            }
-
-            const speed = body.speed;
-            if (speed < this.minSpeed && speed > 0) {
-                body.velocity.x *= this.minSpeed / speed;
-                body.velocity.y *= this.minSpeed / speed;
-            } else if (speed === 0) {
-                body.setVelocity(facingX * this.minSpeed, facingY * this.minSpeed);
-            } else if (speed > this.currentSpeed && t === 0) {
-                body.velocity.x *= this.currentSpeed / speed;
-                body.velocity.y *= this.currentSpeed / speed;
-            }
-        }
-
-        // --- Wrap ---
-        this.physics.world.wrap(this.headSprite, 0);
-
-        const hx = this.headSprite.x;
-        const hy = this.headSprite.y;
-        const speed = body.speed;
-
-        // --- Tire marks ---
-        const velAngleMark = Math.atan2(body.velocity.y, body.velocity.x);
-        let driftAngle = this.headAngle - velAngleMark;
-        while (driftAngle > Math.PI) driftAngle -= Math.PI * 2;
-        while (driftAngle < -Math.PI) driftAngle += Math.PI * 2;
-        const absDrift = Math.abs(driftAngle);
-        const tireThreshold = 0.5;
-        const tireFull = 1.0;
-
-        let targetTireIntensity = 0;
-        if (absDrift > tireThreshold && speed > 90) {
-            targetTireIntensity = Math.min((absDrift - tireThreshold) / (tireFull - tireThreshold), 1);
-        }
-        if (brakeInput && speed > 30) {
-            targetTireIntensity = Math.max(targetTireIntensity, Math.min(speed / 150, 1));
-        }
-
-        const tireRampSpeed = targetTireIntensity > this.tireMarkIntensity ? 2.4 : 6.5;
-        const tireLerp = 1 - Math.exp(-tireRampSpeed * dt);
-        this.tireMarkIntensity += (targetTireIntensity - this.tireMarkIntensity) * tireLerp;
-        if (targetTireIntensity === 0 && this.tireMarkIntensity < 1) this.tireMarkIntensity = 0;
-
-        if (this.tireMarkIntensity > 0) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
-            
-            // Use car's heading angle for positioning (not velocity angle)
-            // This ensures marks appear in correct position even at low/zero velocity
-            const perpAngle = this.headAngle + Math.PI / 2;
-            const spread = this.wheelSpreadY;
-            const behindDist = Math.abs(this.rearWheelX);
-            const baseX = hx + Math.cos(this.headAngle) * this.rearWheelX;
-            const baseY = hy + Math.sin(this.headAngle) * this.rearWheelX;
-            const leftX = baseX + Math.cos(perpAngle) * spread;
-            const leftY = baseY + Math.sin(perpAngle) * spread;
-            const rightX = baseX - Math.cos(perpAngle) * spread;
-            const rightY = baseY - Math.sin(perpAngle) * spread;
-
-            // Use velocity angle for mark rotation (visual direction)
-            const isoAngle = Math.atan2(vy * 1.5, vx);
-            const markAngleDeg = isoAngle * (180 / Math.PI);
-            this.tireEmitterLeft.particleRotate = markAngleDeg;
-            this.tireEmitterRight.particleRotate = markAngleDeg;
-
-            this.tireEmitterLeft.particleAlpha = this.tireMarkIntensity * 0.54;
-            this.tireEmitterRight.particleAlpha = this.tireMarkIntensity * 0.54;
-
-            this.tireEmitterLeft.emitParticleAt(leftX, leftY, 1);
-            this.tireEmitterRight.emitParticleAt(rightX, rightY, 1);
-        }
-
-        // --- Boost flame/smoke (single exhaust) ---
-        if (this.boostIntensity > 0.01) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
-            const velAngle = Math.atan2(vy, vx);
-            const exhaustAngleDeg = (velAngle * 180 / Math.PI + 180) % 360;
-
-            // Rotate the exhaust offset based on car's visual angle
-            const exhaustLocalX = this.rearWheelX - 15;  // Behind the car
-            const exhaustLocalY = 0;  // Centered
-            const exhaustX = hx + Math.cos(this.headAngle) * exhaustLocalX - Math.sin(this.headAngle) * exhaustLocalY;
-            const exhaustY = hy + Math.sin(this.headAngle) * exhaustLocalX + Math.cos(this.headAngle) * exhaustLocalY;
-
-            this.boostFlameEmitter.particleAngle = { min: exhaustAngleDeg - 8, max: exhaustAngleDeg + 8 };
-            const flameCount = Math.ceil(this.boostIntensity * 3);
-            this.boostFlameEmitter.emitParticleAt(exhaustX, exhaustY, flameCount);
-
-            const smokeX = exhaustX;
-            const smokeY = exhaustY;
-            this.boostSmokeEmitter.particleAngle = { min: exhaustAngleDeg - 25, max: exhaustAngleDeg + 25 };
-            const smokeCount = Math.ceil(this.boostIntensity * 5.5);
-            this.boostSmokeEmitter.emitParticleAt(smokeX, smokeY, smokeCount);
-        }
-
-        // --- Handbrake smoke (two rear tyres) ---
-        if (brakeInput && speed > 30) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
-            const velAngle = Math.atan2(vy, vx);
-
-            // Rotate wheel positions based on car's visual angle
-            const perpAngle = this.headAngle + Math.PI / 2;
-            const behindDist = Math.abs(this.rearWheelX);
-            const spread = this.wheelSpreadY;
-
-            const baseX = hx + Math.cos(this.headAngle) * this.rearWheelX;
-            const baseY = hy + Math.sin(this.headAngle) * this.rearWheelX;
-
-            const leftX = baseX + Math.cos(perpAngle) * spread;
-            const leftY = baseY + Math.sin(perpAngle) * spread;
-            const rightX = baseX - Math.cos(perpAngle) * spread;
-            const rightY = baseY - Math.sin(perpAngle) * spread;
-
-            const count = Math.ceil(Math.min(speed / 100, 1) * 2.5);
-            this.brakeSmokeEmitterLeft.emitParticleAt(leftX, leftY, count);
-            this.brakeSmokeEmitterRight.emitParticleAt(rightX, rightY, count);
-        }
-
-        // --- Pickup ---
-        const pdx = hx - this.pickupX;
-        const pdy = hy - this.pickupY;
-        if (Math.sqrt(pdx * pdx + pdy * pdy) < this.pickupCollectDist) {
-            this.score += 350; // Trophy collection points
-            this.timeRemaining = Math.min(this.timeRemaining + this.pickupTimeBonus, 99);
-            this.boostFuel = Math.min(this.boostMax, this.boostFuel + this.boostRefillAmount);
-            
-            this.showTimeBonusPopup(this.pickupX, this.pickupY);
-            this.spawnPickup();
-            this.collectSound.play({ volume: .9 });
-        }
-
-        // --- Update car sprite frame ---
-        let angleDeg = (this.headAngle * 180 / Math.PI) % 360;
-        if (angleDeg < 0) angleDeg += 360;
-        const frameIndex = Math.round(angleDeg / (360 / this.totalCarFrames)) % this.totalCarFrames;
-        const frameKey = `car_${String(frameIndex).padStart(3, '0')}`;
-        this.carSprite.setTexture(frameKey);
-        this.carSprite.setPosition(hx, hy);
-
-        this.carShadow.setTexture(frameKey);
-        if (hx < 0) this.headSprite.setX(this.width);
-        if (hx > this.width) this.headSprite.setX(0);
-        if (hy < 0) this.headSprite.setY(this.height);
-        if (hy > this.height) this.headSprite.setY(0);
-        this.carShadow.setScale(0.95, 1); // Slightly squashed like decorations
-        this.carShadow.setPosition(hx + 4, hy + 58); // Offset to bottom-right
-
-        // Update score text
-        this.scoreText.setText(`Score: ${this.score}`);
-        
-        if (this.debugText) {
-            this.debugText.setText(
-                `Spd: ${Math.round(speed)}  Thrust: ${this.forwardThrust}`
-            );
-        }
-
-        // --- Update boost gauge bar (smoothed) ---
-        const barX = 16;
-        const barY = 48;
-        const barW = 120;
-        const barH = 10;
-
-        const barLerp = 1 - Math.exp(-6 * dt);
-        this.boostBarDisplay += (this.boostFuel - this.boostBarDisplay) * barLerp;
-        const fillW = barW * Math.max(0, this.boostBarDisplay / this.boostMax);
-
-        this.boostBarFill.clear();
-        const fuelRatio = this.boostBarDisplay / this.boostMax;
-        const r = Math.round(255 * (1 - fuelRatio));
-        const g = Math.round(136 + 68 * fuelRatio);
-        const b = Math.round(255 * fuelRatio);
-        const fillColor = (r << 16) | (g << 8) | b;
-        this.boostBarFill.fillStyle(fillColor, 0.9);
-        if (fillW > 1) {
-            this.boostBarFill.fillRoundedRect(barX, barY, fillW, barH, 3);
-        }
-
-        // --- Sound layers ---
-        const brakeScreech = brakeInput ? 0.15 : 0;
-        this.soundManager.setLayerTarget('screech', Math.max(this.tireMarkIntensity, brakeScreech));
-
-        const nitroTarget = (thrustInput && this.boostFuel > 0 && !brakeInput) ? 1 : 0;
-        this.soundManager.setLayerTarget('nitro', nitroTarget);
-
-        if (this.isAccelerating) {
-            this.accelStopTimer = 0;
-            this.soundManager.setCrossfadeLayerScale('engine', 1);
-        } else {
-            this.accelStopTimer += dt;
-            if (this.accelStopTimer >= this.engineFadeDelay) {
-                this.soundManager.setCrossfadeLayerScale('engine', brakeInput ? 0.3 : 0);
-            }
-        }
-
-        const stoppingTarget = brakeInput ? 1 : 0;
-        this.soundManager.setLayerTarget('stopping', stoppingTarget);
-        
         this.soundManager.update(dt);
     }
 
-    private showTimeBonusPopup(x: number, y: number) {
-        const popup = this.add.text(x, y, `+${this.pickupTimeBonus}s`, {
-            fontFamily: 'Arial Black',
-            fontSize: 28,
-            color: '#44ff88',
-            stroke: '#000000',
-            strokeThickness: 4,
-            align: 'center',
-        }).setOrigin(0.5).setDepth(15).setAlpha(0).setScale(0.3);
+    private updatePlayer(player: PlayerState, dt: number) {
+        const car = player.car;
 
-        this.tweens.add({
-            targets: popup,
-            alpha: 1,
-            scale: 1.2,
-            y: y - 40,
-            duration: 300,
-            ease: 'Back.easeOut',
-            onComplete: () => {
-                this.tweens.add({
-                    targets: popup,
-                    alpha: 0,
-                    scale: 0.6,
-                    y: y - 70,
-                    duration: 400,
-                    ease: 'Quad.easeIn',
-                    onComplete: () => popup.destroy(),
-                });
-            },
-        });
+        // --- Input ---
+        const input = car.readInput();
+
+        // --- Reverse ---
+        if (car.updateReverse(dt, input)) return;
+
+        // --- Forward physics ---
+        car.updateForward(dt, input);
+
+        // --- Particles ---
+        player.particles.update(car, input.brakeInput);
+
+        // --- Pickup collection ---
+        const hx = car.headSprite.x;
+        const hy = car.headSprite.y;
+        if (this.pickup.checkCollection(hx, hy)) {
+            player.score += 350;
+            this.timeRemaining = Math.min(this.timeRemaining + this.pickupTimeBonus, 99);
+            car.boostFuel = Math.min(car.boostMax, car.boostFuel + car.boostRefillAmount);
+
+            this.ui.showTimeBonusPopup(this.pickup.pickupX, this.pickup.pickupY, this.pickupTimeBonus);
+            this.pickup.spawn();
+            this.collectSound.play({ volume: .9 });
+        }
+
+        // --- Boost bar (smoothed) — only show for player 1 for now ---
+        if (player.config.id === 1) {
+            const barLerp = 1 - Math.exp(-6 * dt);
+            car.boostBarDisplay += (car.boostFuel - car.boostBarDisplay) * barLerp;
+            this.ui.updateBoostBar(car.boostBarDisplay, car.boostMax);
+        }
     }
 
+    private updateSound(player: PlayerState, dt: number) {
+        const car = player.car;
+        const input = car.readInput(); // Re-read for sound — cheap since keys are cached
+
+        const brakeScreech = input.brakeInput ? 0.15 : 0;
+        this.soundManager.setLayerTarget('screech', Math.max(car.tireMarkIntensity, brakeScreech));
+
+        const nitroTarget = (input.thrustInput && car.boostFuel > 0 && !input.brakeInput) ? 1 : 0;
+        this.soundManager.setLayerTarget('nitro', nitroTarget);
+
+        if (car.isAccelerating) {
+            player.accelStopTimer = 0;
+            this.soundManager.setCrossfadeLayerScale('engine', 1);
+        } else {
+            player.accelStopTimer += dt;
+            if (player.accelStopTimer >= this.engineFadeDelay) {
+                this.soundManager.setCrossfadeLayerScale('engine', input.brakeInput ? 0.3 : 0);
+            }
+        }
+
+        this.soundManager.setLayerTarget('stopping', input.brakeInput ? 1 : 0);
+    }
+
+    // ========== GAME FLOW ==========
 
     private endGame() {
         this.gameOver = true;
 
-        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setAcceleration(0, 0);
-
-        // Smoothly bring car to a stop over longer time
-        this.tweens.add({
-            targets: body.velocity,
-            x: 0,
-            y: 0,
-            duration: 1500, // Increased from 800ms for more gradual stop
-            ease: 'Quad.easeOut',
-        });
-
-        // Also slow down currentSpeed
-        this.tweens.add({
-            targets: this,
-            currentSpeed: 0,
-            duration: 1500, // Match velocity tween
-            ease: 'Quad.easeOut',
-        });
-
-        this.boostFlameEmitter.stop();
-        this.boostSmokeEmitter.stop();
-        this.brakeSmokeEmitterLeft.stop();
-        this.brakeSmokeEmitterRight.stop();
-
-        // Fade music to ~10% of original
-        if (this.music && !this.musicMuted) {
-            this.tweens.add({
-                targets: this.music,
-                volume: 0.012,
-                duration: 1500,
-                ease: 'Quad.easeOut',
-            });
+        for (const player of this.players) {
+            const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
+            body.setAcceleration(0, 0);
+            this.tweens.add({ targets: body.velocity, x: 0, y: 0, duration: 1500, ease: 'Quad.easeOut' });
+            this.tweens.add({ targets: player.car, currentSpeed: 0, duration: 1500, ease: 'Quad.easeOut' });
+            player.particles.stopAll();
         }
 
-        // Fade SFX layers out gently
+        // Fade music
+        if (this.music && !this.musicMuted) {
+            this.tweens.add({ targets: this.music, volume: 0.012, duration: 1500, ease: 'Quad.easeOut' });
+        }
+
+        // Fade SFX
         this.soundManager.setLayerTarget('screech', 0);
         this.soundManager.setCrossfadeLayerScale('engine', 0);
         this.soundManager.setLayerTarget('stopping', 0);
         this.soundManager.setLayerTarget('nitro', 0);
 
-        this.timerText.setVisible(false);
-
-        // Longer delay for game-over UI so player can process what happened
-        this.time.delayedCall(2000, () => { // Increased from 1000ms
-            this.showGameOverUI();
+        this.time.delayedCall(2000, () => {
+            if (this.mode === 'single') {
+                this.ui.showGameOverUI(this.players[0].score, () => this.tryRestart());
+            } else {
+                const p1 = this.players[0].score;
+                const p2 = this.players[1]?.score ?? 0;
+                this.ui.showBattleResultUI(p1, p2, () => this.tryRestart(), () => this.backToMenu());
+            }
         });
     }
 
-    private showGameOverUI() {
-        this.gameOverText.setText('GAME OVER');
-        this.gameOverText.setAlpha(0);
-        this.gameOverText.setScale(0.5);
-        this.gameOverText.setVisible(true);
+    private tryRestart() {
+        // Restart same mode
+        this.scene.restart({ sessionConfig: this.sessionConfig });
+    }
 
-        this.tweens.add({
-            targets: this.gameOverText,
-            alpha: 1,
-            scale: 1,
-            duration: 500,
-            ease: 'Back.easeOut',
-        });
-
-        this.finalScoreText = this.add.text(this.width / 2, this.height / 2 + 10, `Final Score: ${this.score}`, {
-            fontFamily: 'Arial Black',
-            fontSize: 48,
-            color: '#ffffff',
-            stroke: '#000000',
-            strokeThickness: 5,
-            align: 'center',
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
-
-        this.tweens.add({
-            targets: this.finalScoreText,
-            alpha: 1,
-            y: this.height / 2 + 10,
-            duration: 400,
-            delay: 300,
-            ease: 'Quad.easeOut',
-        });
-
-        this.playAgainBtn = this.add.text(this.width / 2, this.height / 2 + 100, 'Play Again', {
-            fontFamily: 'Arial Black',
-            fontSize: 28,
-            color: '#ffffff',
-            backgroundColor: '#33aa55',
-            padding: { x: 24, y: 12 },
-            align: 'center',
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(10)
-            .setInteractive({ useHandCursor: true }).setAlpha(0);
-
-        this.tweens.add({
-            targets: this.playAgainBtn,
-            alpha: 1,
-            duration: 400,
-            delay: 600,
-            ease: 'Quad.easeOut',
-        });
-
-        this.playAgainBtn.on('pointerover', () => this.playAgainBtn?.setStyle({ backgroundColor: '#44cc66' }));
-        this.playAgainBtn.on('pointerout', () => this.playAgainBtn?.setStyle({ backgroundColor: '#33aa55' }));
-        this.playAgainBtn.on('pointerdown', () => {
-            this.tryRestart();
-        });
+    private backToMenu() {
+        // Stop all audio before switching scenes
+        if (this.music?.isPlaying) this.music.stop();
+        if (this.soundManager) this.soundManager.stopAll();
+        this.scene.start('MainMenu');
     }
 }
