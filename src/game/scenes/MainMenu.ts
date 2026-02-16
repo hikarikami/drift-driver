@@ -1,5 +1,8 @@
 import { Scene } from 'phaser';
-import { createSinglePlayerConfig, createBattleConfig, GameSessionConfig } from './GameConfig';
+import { createSinglePlayerConfig, createBattleConfig, GameSessionConfig, PLAYER1_KEYS, PLAYER2_KEYS, KeyBindings  } from './GameConfig';
+
+
+
 
 export class MainMenu extends Scene {
     private width!: number;
@@ -69,21 +72,81 @@ export class MainMenu extends Scene {
         );
 
         // --- Controls hint ---
-        const controlsY = this.height * 0.78;
+        // --- Controls tables (bottom) ---
+        const bottomPadding = 56;          // space above the version text
+        const panelHeight = 148;
+        const panelY = this.height - bottomPadding - panelHeight;
 
-        this.add.text(this.width / 2, controlsY, 'WASD + Shift/Space  •  Arrows + Enter/Backspace', {
-            fontFamily: 'Arial',
-            fontSize: 14,
-            color: '#999999',
-            align: 'center',
-        }).setOrigin(0.5).setDepth(2);
+        const panelWidth = Math.min(720, this.width - 60);
+        const panelX = (this.width - panelWidth) / 2;
 
-        this.add.text(this.width / 2, controlsY + 22, 'Accelerate • Steer • Boost • Brake', {
-            fontFamily: 'Arial',
-            fontSize: 12,
-            color: '#666666',
-            align: 'center',
-        }).setOrigin(0.5).setDepth(2);
+        // subtle panel for legibility
+        this.add.rectangle(
+            panelX + panelWidth / 2,
+            panelY + panelHeight / 2,
+            panelWidth,
+            panelHeight,
+            0x000000,
+            0.45
+        ).setDepth(2);
+
+        // layout
+        const gap = 40;
+        const half = (panelWidth - gap) / 2;
+        const leftX = panelX + 20;
+        const rightX = panelX + 20 + half + gap;
+        const topY = panelY + 14;
+
+        // helper to draw one table
+        const renderControlsTable = (
+            title: string,
+            keys:KeyBindings,
+            x: number,
+            y: number,
+            width: number
+        ) => {
+            const titleText = this.add.text(x, y, title, {
+                fontFamily: 'Arial Black',
+                fontSize: 16,
+                color: '#ffffff',
+            }).setOrigin(0, 0).setDepth(3);
+
+            // column positions
+            const rowStartY = y + 26;
+            const rowGap = 16;
+            const keyColX = x + width - 10; // right aligned keys
+
+            const rows: Array<[string, string]> = [
+                ['Accelerate', keys.up],
+                ['Brake / Reverse', keys.down],
+                ['Steer Left', keys.left],
+                ['Steer Right', keys.right],
+                ['Boost (Nitro)', keys.boost],
+                ['Brake (Handbrake)', keys.brake],
+            ];
+
+            rows.forEach(([action, key], i) => {
+                const ry = rowStartY + i * rowGap;
+
+                this.add.text(x, ry, action, {
+                    fontFamily: 'Arial',
+                    fontSize: 13,
+                    color: '#d0d0d0',
+                }).setOrigin(0, 0).setDepth(3);
+
+                this.add.text(keyColX, ry, key, {
+                    fontFamily: 'Arial Black',
+                    fontSize: 13,
+                    color: '#ffffff',
+                }).setOrigin(1, 0).setDepth(3); // right aligned
+            });
+
+            return titleText;
+        };
+
+        renderControlsTable('Player 1 Controls', PLAYER1_KEYS, leftX, topY, half - 20);
+        renderControlsTable('Player 2 Controls', PLAYER2_KEYS, rightX, topY, half - 20);
+
 
         // --- Version / credit ---
         this.add.text(this.width / 2, this.height - 20, 'v0.1', {
