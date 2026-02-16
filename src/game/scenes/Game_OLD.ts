@@ -1,19 +1,30 @@
 import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
 
+// ========== TRICK SYSTEM TYPES ==========
+
+type TrickDifficulty = 'basic' | 'easy' | 'moderate' | 'hard' | 'tricky' | 'super_tricky' | 'ultra_tricky';
+
+interface TrickDefinition {
+    name: string;
+    difficulty: TrickDifficulty;
+    baseScore: number;
+    canChain: boolean;
+}
+
+interface CompletedTrick {
+    name: string;
+    difficulty: TrickDifficulty;
+    score: number;
+    multiplier: number;
+    timestamp: number;
+}
+
 export class Game extends Scene {
     // World bounds
     private width!: number;
     private height!: number;
-  // Rock visuals (no physics)
-private obstacleSprites: Phaser.GameObjects.Image[] = [];
-
-// Rock colliders (bottom-only hitboxes)
-private obstacleHitboxes!: Phaser.Physics.Arcade.StaticGroup;
-
-// If you want to keep using your existing loops that iterate "decorations":
-// make it represent the collider zones (not the visuals).
-private decorations: Phaser.GameObjects.Zone[] = [];
+    private decorations: Phaser.Physics.Arcade.Image[] = [];
 
 
     // Car (physics-driven)
@@ -99,6 +110,10 @@ private decorations: Phaser.GameObjects.Zone[] = [];
     private debugThrustLabel!: Phaser.GameObjects.Text;
     private debugDragLabel!: Phaser.GameObjects.Text;
     private debugMaxSpdLabel!: Phaser.GameObjects.Text;
+    private showTrickThreshold = false; // Toggle for trick threshold visualization
+    private trickThresholdGraphics!: Phaser.GameObjects.Graphics; // Graphics for drawing threshold zones
+    private showScoreDetails = false; // Toggle for score details display
+    private scoreDetailsText!: Phaser.GameObjects.Text; // Display for score state details
 
     // Game over overlay objects (destroyed on restart)
     private finalScoreText?: Phaser.GameObjects.Text;
@@ -120,16 +135,69 @@ private decorations: Phaser.GameObjects.Zone[] = [];
     private crashSound1!: Phaser.Sound.BaseSound;
     private crashSound2!: Phaser.Sound.BaseSound;
     private crashSound3!: Phaser.Sound.BaseSound;
+    private trickSound!: Phaser.Sound.BaseSound; // Direct sound, not managed by SoundManager
+    private lastTrickSoundTime = 0; // Track when trick sound was last played to prevent spam
+
+    // Trick System
+    private isDrifting = false;
+    private trickHistory: CompletedTrick[] = [];
+    private currentComboMultiplier = 1;
+    private lastTrickTime = 0;
+    private readonly trickComboWindow = 2000; // ms - time window to chain tricks
+    private readonly nearMissThreshold = 80; // pixels - distance from obstacle edge to trigger near-miss
+    private nearMissTracking = new Set<Phaser.Physics.Arcade.Image>(); // Track which obstacles we've scored near-miss for
+    private recentlyCollidedObstacles = new Set<Phaser.Physics.Arcade.Image>(); // Track obstacles we've recently hit
+    
+    // Drift session buffering - NEW STANDARDIZED SYSTEM
+    private activeTricks = new Map<string, number>(); // Tricks currently in progress (type -> current value)
+    private bufferedTricks: string[] = []; // Completed trick instances during this drift session
+    private crashedDuringDrift = false; // Flag if player crashed during current drift session
+    
+    // Handbrake trick tracking
+    private handbrakeStartTime = 0; // When handbrake was first pressed
+    private handbrakeMinDuration = 1000; // Minimum 1 second to score
+    
+    // Nitro trick tracking
+    private nitroStartTime = 0; // When nitro was first activated
+    private nitroMinDuration = 1000; // Minimum 1 second to score
 
     // UI
     private scoreText!: Phaser.GameObjects.Text;
     private gameOverText!: Phaser.GameObjects.Text;
     private debugText!: Phaser.GameObjects.Text;
+    private trickComboText!: Phaser.GameObjects.Text; // Shows current trick combo at bottom of screen
 
     constructor() {
         super('Game');
     }
 
+    // Trick definitions with scoring
+    private readonly TRICKS: Record<string, TrickDefinition> = {
+        NEAR_MISS: {
+            name: 'Near Miss',
+            difficulty: 'easy',
+            baseScore: 50,
+            canChain: true
+        },
+        HANDBRAKEY: {
+            name: 'Handbrakey',
+            difficulty: 'basic',
+            baseScore: 10, // Per second of handbraking
+            canChain: true
+        },
+        NITROX_BABY: {
+            name: 'Nitrox Baby!',
+            difficulty: 'basic',
+            baseScore: 5, // Per second of nitro use
+            canChain: true
+        },
+        CAPPY_CRASH: {
+            name: 'Cappy Crash',
+            difficulty: 'basic',
+            baseScore: 100, // One-off bonus for collecting trophy while boosting
+            canChain: true
+        },
+    };
 
     // ========== HELPER METHODS ==========
 
@@ -177,105 +245,566 @@ private decorations: Phaser.GameObjects.Zone[] = [];
         return shadow;
     }
 
+    // ========== TRICK SYSTEM ==========
+
+    /**
+     * Main trick execution function - handles scoring, combo multipliers, and UI feedback
+     */
+    private executeTrick(trickKey: string) {
+        const trick = this.TRICKS[trickKey];
+        if (!trick) return;
+
+        const now = this.time.now;
+
+        // Use base score directly (no multiplier)
+        const finalScore = trick.baseScore;
+        
+        // Record the trick
+        const completedTrick: CompletedTrick = {
+            name: trick.name,
+            difficulty: trick.difficulty,
+            score: finalScore,
+            multiplier: 1, // Always 1 now
+            timestamp: now
+        };
+        
+        this.trickHistory.push(completedTrick);
+        this.score += finalScore;
+        this.lastTrickTime = now;
+
+        // Visual and audio feedback now handled by combo display system
+    }
+
+    /**
+     * Plays the trick sound effect (first 3 seconds only, with cooldown)
+     */
+    private playTrickSound() {
+        const now = this.time.now;
+        if (now - this.lastTrickSoundTime > 300) { // 300ms cooldown
+            console.log('[TRICK SOUND] Playing...');
+            
+            // Play the sound
+            const soundInstance = this.trickSound.play({ volume: 0.5 });
+            this.lastTrickSoundTime = now;
+            
+            // Stop after 3 seconds to avoid the loop at the end of the audio file
+            this.time.delayedCall(3000, () => {
+                if (soundInstance && typeof soundInstance === 'object' && 'stop' in soundInstance) {
+                    (soundInstance as Phaser.Sound.BaseSound).stop();
+                    console.log('[TRICK SOUND] Stopped after 3 seconds');
+                }
+            });
+        }
+    }
+
+    /**
+     * Checks for near-miss tricks - NEW STANDARDIZED SYSTEM
+     */
+    private checkNearMiss() {
+        if (!this.isDrifting) {
+            // Clean up if not drifting
+            if (this.activeTricks.has('NEAR_MISS')) {
+                this.activeTricks.delete('NEAR_MISS');
+                this.nearMissTracking.clear();
+                this.updateTrickComboDisplay();
+            }
+            return;
+        }
+
+        const carBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        const currentlyNearObstacles = new Set<Phaser.Physics.Arcade.Image>();
+
+        for (const obstacle of this.decorations) {
+            // Skip obstacles we've recently collided with
+            if (this.recentlyCollidedObstacles.has(obstacle)) {
+                continue;
+            }
+            
+            const obstacleBody = obstacle.body as Phaser.Physics.Arcade.Body;
+            
+            // Calculate the closest distance between the two rectangular bodies
+            const carLeft = carBody.x;
+            const carRight = carBody.x + carBody.width;
+            const carTop = carBody.y;
+            const carBottom = carBody.y + carBody.height;
+            
+            const obsLeft = obstacleBody.x;
+            const obsRight = obstacleBody.x + obstacleBody.width;
+            const obsTop = obstacleBody.y;
+            const obsBottom = obstacleBody.y + obstacleBody.height;
+            
+            // Calculate horizontal and vertical distances
+            let horizontalDistance = 0;
+            if (carRight < obsLeft) {
+                horizontalDistance = obsLeft - carRight;
+            } else if (carLeft > obsRight) {
+                horizontalDistance = carLeft - obsRight;
+            }
+            
+            let verticalDistance = 0;
+            if (carBottom < obsTop) {
+                verticalDistance = obsTop - carBottom;
+            } else if (carTop > obsBottom) {
+                verticalDistance = carTop - obsBottom;
+            }
+            
+            const actualDistance = Math.sqrt(horizontalDistance * horizontalDistance + verticalDistance * verticalDistance);
+            
+            // Check if we're currently near this obstacle
+            if (actualDistance > 0 && actualDistance <= this.nearMissThreshold) {
+                currentlyNearObstacles.add(obstacle);
+            }
+        }
+
+        const wasNearObstacles = this.nearMissTracking.size > 0;
+        const isNearObstacles = currentlyNearObstacles.size > 0;
+
+        // AC1: TRICK STARTED - now near obstacles
+        if (!wasNearObstacles && isNearObstacles) {
+            this.activeTricks.set('NEAR_MISS', 0);
+            this.updateTrickComboDisplay();
+        }
+
+        // AC2: TRICK IN PROGRESS - update count
+        if (isNearObstacles) {
+            this.activeTricks.set('NEAR_MISS', currentlyNearObstacles.size);
+            this.updateTrickComboDisplay();
+        }
+
+        // AC3: TRICK COMPLETED - moved away from all obstacles
+        if (wasNearObstacles && !isNearObstacles) {
+            const completedCount = this.nearMissTracking.size;
+            this.activeTricks.delete('NEAR_MISS');
+            
+            // Add completed near misses to buffer
+            for (let i = 0; i < completedCount; i++) {
+                this.bufferedTricks.push('NEAR_MISS');
+            }
+            
+            this.updateTrickComboDisplay();
+        }
+
+        // Update tracking set
+        this.nearMissTracking = currentlyNearObstacles;
+    }
+
+    /**
+     * Checks for handbrake trick - NEW STANDARDIZED SYSTEM
+     */
+    private checkHandbrake(brakeInput: boolean) {
+        const now = this.time.now;
+        const wasActive = this.activeTricks.has('HANDBRAKEY');
+        
+        // Handbrake released - COMPLETE TRICK (check this FIRST, before drift check)
+        if (!brakeInput && wasActive) {
+            const duration = now - this.handbrakeStartTime;
+            this.activeTricks.delete('HANDBRAKEY'); // Remove from active
+            
+            // Only buffer if held long enough
+            if (duration >= this.handbrakeMinDuration) {
+                const seconds = Math.floor(duration / 1000);
+                // Add completed instances to buffer
+                for (let i = 0; i < seconds; i++) {
+                    this.bufferedTricks.push('HANDBRAKEY');
+                }
+                console.log(`[HANDBRAKE] Buffered ${seconds} handbrakey tricks`);
+            } else {
+                console.log(`[HANDBRAKE] Released too early (${duration}ms < ${this.handbrakeMinDuration}ms)`);
+            }
+            
+            this.updateTrickComboDisplay(); // Update display
+            // Don't return - let it clean up if needed
+        }
+        
+        // Only track handbrake during drift
+        if (!this.isDrifting) {
+            // Clean up if not drifting
+            if (this.activeTricks.has('HANDBRAKEY')) {
+                this.activeTricks.delete('HANDBRAKEY');
+                this.updateTrickComboDisplay();
+            }
+            return;
+        }
+        
+        // Handbrake just pressed - START TRICK
+        if (brakeInput && !wasActive) {
+            this.handbrakeStartTime = now;
+            this.activeTricks.set('HANDBRAKEY', 0); // Start at 0 seconds
+            this.updateTrickComboDisplay(); // AC1: Show trick started
+            console.log(`[HANDBRAKE] Started`);
+        }
+        
+        // Handbrake held - UPDATE TRICK
+        if (brakeInput && wasActive) {
+            const duration = now - this.handbrakeStartTime;
+            const seconds = Math.floor(duration / 1000);
+            this.activeTricks.set('HANDBRAKEY', seconds); // AC2: Update live value
+            this.updateTrickComboDisplay(); // Update display in real-time
+        }
+    }
+
+    /**
+     * Checks for nitro trick - NEW STANDARDIZED SYSTEM
+     */
+    private checkNitro(boostActive: boolean) {
+        const now = this.time.now;
+        const wasActive = this.activeTricks.has('NITROX_BABY');
+        
+        // Nitro deactivated - COMPLETE TRICK
+        if (!boostActive && wasActive) {
+            const duration = now - this.nitroStartTime;
+            this.activeTricks.delete('NITROX_BABY'); // Remove from active
+            
+            // Only buffer if held long enough
+            if (duration >= this.nitroMinDuration) {
+                const seconds = Math.floor(duration / 1000);
+                // Add completed instances to buffer
+                for (let i = 0; i < seconds; i++) {
+                    this.bufferedTricks.push('NITROX_BABY');
+                }
+                console.log(`[NITRO] Buffered ${seconds} nitrox baby tricks`);
+                
+                // Show score popup immediately for instant feedback
+                const hx = this.headSprite.x;
+                const hy = this.headSprite.y;
+                this.showScorePopup(hx, hy - 40, seconds * this.TRICKS.NITROX_BABY.baseScore);
+                
+                // Execute tricks immediately (not waiting for drift to end)
+                for (let i = 0; i < seconds; i++) {
+                    this.executeTrick('NITROX_BABY');
+                }
+                // Clear from buffer since we just executed them
+                const nitroCount = this.bufferedTricks.filter(t => t === 'NITROX_BABY').length;
+                this.bufferedTricks = this.bufferedTricks.filter(t => t !== 'NITROX_BABY');
+                
+                // Play trick sound
+                this.playTrickSound();
+            } else {
+                console.log(`[NITRO] Released too early (${duration}ms < ${this.nitroMinDuration}ms)`);
+            }
+            
+            this.updateTrickComboDisplay(); // Update display
+            return;
+        }
+        
+        // Nitro just activated - START TRICK
+        if (boostActive && !wasActive) {
+            this.nitroStartTime = now;
+            this.activeTricks.set('NITROX_BABY', 0); // Start at 0 seconds
+            console.log(`[NITRO] Started - activeTricks size: ${this.activeTricks.size}`);
+            this.updateTrickComboDisplay(); // AC1: Show trick started
+        }
+        
+        // Nitro held - UPDATE TRICK
+        if (boostActive && wasActive) {
+            const duration = now - this.nitroStartTime;
+            const seconds = Math.floor(duration / 1000);
+            this.activeTricks.set('NITROX_BABY', seconds); // AC2: Update live value
+            this.updateTrickComboDisplay(); // Update display in real-time
+        }
+    }
+
+    /**
+     * Updates the trick combo display - NEW STANDARDIZED SYSTEM
+     * Shows BOTH active (in-progress) and buffered (completed) tricks
+     */
+    private updateTrickComboDisplay() {
+        const hasActiveTricks = this.activeTricks.size > 0;
+        const hasBufferedTricks = this.bufferedTricks.length > 0;
+        
+        // AC1/AC2: Hide if no tricks at all
+        if (!hasActiveTricks && !hasBufferedTricks) {
+            this.trickComboText.setVisible(false);
+            return;
+        }
+
+        const trickNames: string[] = [];
+        let totalScore = 0;
+
+        // Add buffered (completed) tricks first
+        for (const trickKey of this.bufferedTricks) {
+            const trick = this.TRICKS[trickKey];
+            if (!trick) continue;
+            
+            trickNames.push(trick.name);
+            totalScore += trick.baseScore; // Just base score, no multiplier
+        }
+
+        // Add active (in-progress) tricks - with live values
+        for (const [trickKey, value] of this.activeTricks) {
+            const trick = this.TRICKS[trickKey];
+            if (!trick) continue;
+
+            // For duration-based tricks (Handbrakey, Nitrox Baby), show seconds
+            // For count-based tricks (Near Miss), show count
+            // For instant tricks (Cappy Crash), show once
+            if (trickKey === 'HANDBRAKEY' || trickKey === 'NITROX_BABY') {
+                // Show each second as a separate instance
+                for (let i = 0; i < value; i++) {
+                    trickNames.push(trick.name);
+                    totalScore += trick.baseScore; // Just base score
+                }
+                // Add "..." to show it's still going
+                if (value > 0) {
+                    trickNames[trickNames.length - 1] += '...';
+                }
+            } else if (trickKey === 'NEAR_MISS') {
+                // Show as "Near Miss (active)" or similar
+                trickNames.push(`${trick.name}...`);
+                // Don't count score until completed
+            } else if (trickKey === 'CAPPY_CRASH') {
+                // Show as "Cappy Crash!" - instant trick
+                trickNames.push(trick.name + '!');
+                totalScore += trick.baseScore;
+            }
+        }
+
+        // Build display string
+        const comboString = trickNames.join(' + ');
+        this.trickComboText.setText(`${comboString}\n${totalScore} pts`);
+        this.trickComboText.setVisible(true);
+    }
+
+    /**
+     * Updates drift state based on tire mark intensity
+     */
+    private updateDriftState() {
+        // Player is drifting when tire marks are visible
+        const wasDrifting = this.isDrifting;
+        this.isDrifting = this.tireMarkIntensity > 0.2; // Lowered from 0.3 for easier drift detection
+
+        // When drift starts, clear the crash flag and show empty combo
+        if (!wasDrifting && this.isDrifting) {
+            this.crashedDuringDrift = false;
+            this.trickComboText.setVisible(false);
+        }
+
+        // Drift state change detection only - finalization happens later
+        if (wasDrifting && !this.isDrifting) {
+            // Small delay before resetting combo
+            this.time.delayedCall(this.trickComboWindow, () => {
+                if (!this.isDrifting) {
+                    this.currentComboMultiplier = 1;
+                }
+            });
+        }
+    }
+
+    /**
+     * Finalizes trick session - called AFTER all trick updates
+     * This ensures active tricks have been moved to buffered
+     */
+    private finalizeTrickSession() {
+        // Only finalize if not currently drifting and we have buffered tricks
+        if (this.isDrifting) return;
+        if (this.bufferedTricks.length === 0) return;
+        
+        // Check if there are still active tricks in progress
+        const hasActiveTricks = this.activeTricks.size > 0;
+        
+        // AC3: Only finalize if NO active tricks remain
+        if (hasActiveTricks) return; // Still tricks in progress, wait
+        
+        // Finalize the trick session
+        if (!this.crashedDuringDrift) {
+            // SUCCESS - Award tricks and show celebration
+            let totalScore = 0;
+            for (const trickKey of this.bufferedTricks) {
+                this.executeTrick(trickKey);
+                const trick = this.TRICKS[trickKey];
+                if (trick) {
+                    totalScore += trick.baseScore;
+                }
+            }
+            
+            // Show score popup above car
+            if (totalScore > 0) {
+                const hx = this.headSprite.x;
+                const hy = this.headSprite.y;
+                this.showScorePopup(hx, hy - 40, totalScore);
+            }
+            
+            // Play success sound
+            this.playTrickSound();
+            
+            // Animate "TRICK SCORED!" upward - stay visible for 1.5s first
+            this.trickComboText.setColor('#44ff44'); // Green for success
+            this.tweens.add({
+                targets: this.trickComboText,
+                y: this.height - 200,
+                alpha: 0,
+                duration: 1000,
+                delay: 1500, // Stay visible for 1.5 seconds before animating away
+                ease: 'Quad.easeOut',
+                onComplete: () => {
+                    this.trickComboText.setAlpha(1);
+                    this.trickComboText.setY(this.height - 100);
+                    this.trickComboText.setVisible(false);
+                    this.trickComboText.setColor('#ffdd00'); // Reset to yellow
+                }
+            });
+        } else {
+            // AC4: FAILED - Show failure animation - stay visible for 1.5s first
+            this.trickComboText.setColor('#ff4444'); // Red for failure
+            this.tweens.add({
+                targets: this.trickComboText,
+                y: this.height + 50,
+                alpha: 0,
+                duration: 500,
+                delay: 1500, // Stay visible for 1.5 seconds before animating away
+                ease: 'Quad.easeIn',
+                onComplete: () => {
+                    this.trickComboText.setAlpha(1);
+                    this.trickComboText.setY(this.height - 100);
+                    this.trickComboText.setVisible(false);
+                    this.trickComboText.setColor('#ffdd00'); // Reset to yellow
+                }
+            });
+        }
+        
+        // Clear the buffer for next drift session
+        this.bufferedTricks = [];
+        this.crashedDuringDrift = false;
+        this.activeTricks.clear(); // Clear any lingering active tricks
+    }
+
+    /**
+     * Updates the score details debug display
+     */
+    private updateScoreDetailsDisplay() {
+        // Determine trick status
+        let status = 'NOT STARTED';
+        let statusColor = '#888888';
+        
+        const hasActiveTricks = this.activeTricks.size > 0;
+        const hasBufferedTricks = this.bufferedTricks.length > 0;
+        
+        if (this.crashedDuringDrift) {
+            status = 'FAILED';
+            statusColor = '#ff4444';
+        } else if (hasActiveTricks || hasBufferedTricks) {
+            status = 'IN PROGRESS';
+            statusColor = '#ffdd00';
+        } else if (this.trickHistory.length > 0 && this.time.now - this.lastTrickTime < 3000) {
+            // Recently completed a trick
+            status = 'SUCCESS';
+            statusColor = '#44ff44';
+        }
+        
+        // Build details string
+        const lines = [
+            `STATUS: ${status}`,
+            ``,
+            `Drifting: ${this.isDrifting ? 'YES' : 'NO'}`,
+            `Crashed: ${this.crashedDuringDrift ? 'YES' : 'NO'}`,
+            `Active Tricks: ${this.activeTricks.size}`,
+            `Buffered Tricks: ${this.bufferedTricks.length}`,
+            `Combo Multiplier: ${this.currentComboMultiplier.toFixed(1)}x`,
+            ``,
+            `Finalize Blocked:`,
+            `  Still Drifting: ${this.isDrifting ? 'YES' : 'NO'}`,
+            `  No Buffered: ${this.bufferedTricks.length === 0 ? 'YES' : 'NO'}`,
+            `  Has Active: ${this.activeTricks.size > 0 ? 'YES' : 'NO'}`,
+            ``,
+            `Total Tricks: ${this.trickHistory.length}`,
+            `Total Score: ${this.score}`,
+        ];
+        
+        // Add active trick details
+        if (hasActiveTricks) {
+            lines.push(``);
+            lines.push(`ACTIVE:`);
+            for (const [trickKey, value] of this.activeTricks) {
+                const trick = this.TRICKS[trickKey];
+                if (trick) {
+                    lines.push(`  ${trick.name}: ${value}`);
+                }
+            }
+        }
+        
+        // Add buffered trick details
+        if (hasBufferedTricks) {
+            lines.push(``);
+            lines.push(`BUFFERED:`);
+            const trickCounts = new Map<string, number>();
+            for (const trickKey of this.bufferedTricks) {
+                trickCounts.set(trickKey, (trickCounts.get(trickKey) || 0) + 1);
+            }
+            for (const [trickKey, count] of trickCounts) {
+                const trick = this.TRICKS[trickKey];
+                if (trick) {
+                    lines.push(`  ${trick.name} x${count}`);
+                }
+            }
+        }
+        
+        this.scoreDetailsText.setText(lines.join('\n'));
+        this.scoreDetailsText.setColor(statusColor);
+    }
+
     // ========== SCENERY SPAWNING ==========
-/**
- * Spawns collision obstacles (rocks, debris, etc.)
- * Visual sprite is full-height, but collision is ONLY the bottom “base” (Option B).
- * - rock image: no physics
- * - hitbox: static Arcade body (zone) positioned at the bottom of the rock
- */
-private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
-    const config = {
-      count: 9,
-      minSpacing: 145,
-      marginFromEdge: 100,
-      textureRange: { min: 53, max: 60 },
-      texturePrefix: 'tile_',
-      scale: 2.75,
-  
-      shadowScale: 3,
-      shadowOffset: { x: -5, y: 5 },
-      shadowAngle: 130,
-      depth: 5,
-      maxAttempts: 20,
-  
-      // collision tuning (SOURCE pixels)
-      defaultBaseHeightPx: 18,
-      defaultBaseWidthPx: 28,
-      defaultYOffsetPx: -1,
-      hitProfile: {} as Record<string, { baseH?: number; baseW?: number; yAdjust?: number }>
-    };
-  
-    const positions: { x: number, y: number }[] = [...existingPositions];
-  
-    // Ensure group exists
-    if (!this.obstacleHitboxes) {
-      this.obstacleHitboxes = this.physics.add.staticGroup();
+
+    /**
+     * Spawns collision obstacles (rocks, debris, etc.)
+     * These block the car and cause crashes
+     */
+    private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
+        // Configuration
+        const config = {
+            count: 9,                    // Number of obstacles to spawn
+            minSpacing: 145,             // Minimum distance between obstacles
+            marginFromEdge: 100,         // Keep away from screen edges
+            textureRange: { min: 53, max: 60 }, // Tile range for random selection
+            texturePrefix: 'tile_',
+            scale: 2.75,                 // Visual size
+            shadowScale: 3,
+            shadowOffset: { x: -5, y: 5 },
+            shadowAngle: 130,
+            depth: 5,
+            maxAttempts: 20
+        };
+
+        const positions: { x: number, y: number }[] = [...existingPositions];
+
+        for (let i = 0; i < config.count; i++) {
+            const pos = this.findValidSpawnPosition(
+                positions,
+                config.minSpacing,
+                config.marginFromEdge,
+                config.maxAttempts
+            );
+
+            if (!pos) continue; // Skip if no valid position found
+            positions.push(pos);
+
+            // Random obstacle texture
+            const textureNum = Phaser.Math.Between(config.textureRange.min, config.textureRange.max);
+            const textureName = `${config.texturePrefix}${String(textureNum).padStart(3, '0')}`;
+
+            // Create shadow
+            const shadow = this.createStaticShadow(
+                pos.x, pos.y, textureName,
+                config.shadowScale,
+                config.shadowOffset.x,
+                config.shadowOffset.y,
+                config.depth
+            );
+            shadow.angle = config.shadowAngle;
+
+            // Create obstacle with physics
+            const obstacle = this.physics.add.image(pos.x, pos.y, textureName);
+            obstacle.setOrigin(0.5, 0.5);
+            obstacle.setScale(config.scale);
+            obstacle.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
+            obstacle.setDepth(config.depth);
+            obstacle.setImmovable(true);
+            obstacle.body.allowGravity = false;
+
+            this.decorations.push(obstacle);
+        }
+
+        return positions; // Return for use by decorative scenery
     }
-  
-    for (let i = 0; i < config.count; i++) {
-      const pos = this.findValidSpawnPosition(
-        positions,
-        config.minSpacing,
-        config.marginFromEdge,
-        config.maxAttempts
-      );
-  
-      if (!pos) continue;
-      positions.push(pos);
-  
-      const textureNum = Phaser.Math.Between(config.textureRange.min, config.textureRange.max);
-      const textureName = `${config.texturePrefix}${String(textureNum).padStart(3, '0')}`;
-  
-      // Shadow
-      const shadow = this.createStaticShadow(
-        pos.x, pos.y, textureName,
-        config.shadowScale,
-        config.shadowOffset.x,
-        config.shadowOffset.y,
-        config.depth
-      );
-      shadow.angle = config.shadowAngle;
-  
-      // Visual rock (no physics)
-      const rock = this.add.image(pos.x, pos.y, textureName)
-        .setOrigin(0.5, 0.5)
-        .setScale(config.scale)
-        .setDepth(config.depth);
-  
-      rock.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-  
-      // Hitbox profile
-      const profile = config.hitProfile[textureName] ?? {};
-      const baseH = profile.baseH ?? config.defaultBaseHeightPx;
-      const baseW = profile.baseW ?? config.defaultBaseWidthPx;
-      const yAdjust = profile.yAdjust ??  config.defaultYOffsetPx;
-  
-      // Calculate hitbox size in DISPLAY pixels
-      const srcH = rock.height;           // e.g. 32
-      const displayH = srcH * config.scale;
-  
-      const bodyW = baseW * config.scale;
-      const bodyH = baseH * config.scale;
-  
-      // Bottom of the rock is at pos.y + displayH/2 (because origin is centered)
-      const hitboxY =
-        pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
-  
-      // Invisible collider zone (static)
-      const zone = this.add.zone(pos.x, hitboxY, bodyW, bodyH);
-      this.physics.add.existing(zone, true); // static body
-  
-      // Add to group for collisions + keep reference for near-miss/spawn checks
-      this.obstacleHitboxes.add(zone);
-      this.decorations.push(zone);
-      this.obstacleSprites.push(rock);
-    }
-  
-    return positions;
-  }
-  
-  
 
     /**
      * Spawns decorative scenery (cacti, plants, etc.)
@@ -416,6 +945,7 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         this.crashSound1 = this.sound.add('crash-1');
         this.crashSound2 = this.sound.add('crash-2');
         this.crashSound3 = this.sound.add('crash-3');
+        this.trickSound = this.sound.add('trick');
         
         // Play music
         console.log('[MUSIC] Playing music');
@@ -543,6 +1073,8 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
 
         this.boostBarFill = this.add.graphics().setScrollFactor(0).setDepth(10);
 
+        // Trick threshold visualization graphics (for debug)
+        this.trickThresholdGraphics = this.add.graphics().setDepth(6); // Above obstacles but below car
 
         // Countdown timer display — large, top-centre
         this.timerText = this.add.text(this.width / 2, 20, '60', {
@@ -563,7 +1095,25 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             align: 'center',
         }).setOrigin(0.5).setVisible(false).setScrollFactor(0).setDepth(10);
 
+        // Trick combo display at bottom center (Tony Hawk style)
+        this.trickComboText = this.add.text(this.width / 2, this.height - 100, '', {
+            fontFamily: 'Arial Black',
+            fontSize: 20,
+            color: '#ffdd00',
+            stroke: '#000000',
+            strokeThickness: 4,
+            align: 'center',
+        }).setOrigin(0.5).setVisible(false).setScrollFactor(0).setDepth(15);
 
+        // Score details debug display (top right)
+        this.scoreDetailsText = this.add.text(this.width - 10, 70, '', {
+            fontFamily: 'Courier',
+            fontSize: 14,
+            color: '#00ff00',
+            backgroundColor: '#000000aa',
+            padding: { x: 8, y: 6 },
+            align: 'left',
+        }).setOrigin(1, 0).setVisible(false).setScrollFactor(0).setDepth(20);
 
         const keyboard = this.input.keyboard;
         keyboard?.on('keydown-R', () => this.tryRestart());
@@ -641,14 +1191,8 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         body.setDamping(true);
         body.setDrag(this.drag, this.drag);
 
-
-        
-   
-
-
         // Add collision callback for crunchy crash feedback
-        this.physics.add.collider(this.headSprite, this.obstacleHitboxes, (car: any, obstacle: any) => {
-
+        this.physics.add.collider(this.headSprite, this.decorations, (car: any, obstacle: any) => {
             // Only apply slowdown once per cooldown period
             const now = this.time.now;
             if (now - this.lastCollisionTime < this.collisionCooldown) {
@@ -656,6 +1200,26 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             }
             this.lastCollisionTime = now;
             
+            // Mark this obstacle as recently collided (prevents near-miss on collision)
+            const obstacleSprite = obstacle as Phaser.Physics.Arcade.Image;
+            this.recentlyCollidedObstacles.add(obstacleSprite);
+            this.nearMissTracking.delete(obstacleSprite); // Clear any near miss tracking
+            
+            // AC4: FAIL CONDITION - crashed during trick session
+            if (this.isDrifting) {
+                this.crashedDuringDrift = true;
+                // Clear ALL tricks - both active and buffered
+                this.bufferedTricks = [];
+                this.activeTricks.clear();
+                // Update combo display to show failure
+                this.updateTrickComboDisplay();
+            }
+            
+            // Clear the collision flag after 1 second
+            this.time.delayedCall(1000, () => {
+                this.recentlyCollidedObstacles.delete(obstacleSprite);
+            });
+
             // Capture speed before impact for sound selection
             const speedAtImpact = Math.abs(this.currentSpeed);
 
@@ -665,8 +1229,8 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             // Calculate bounce direction (away from obstacle)
             const carBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
 
-            const dx = this.headSprite.x - obstacle.x;
-            const dy = this.headSprite.y - obstacle.y;
+            const dx = this.headSprite.x - obstacleSprite.x;
+            const dy = this.headSprite.y - obstacleSprite.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
 
             if (distance > 0) {
@@ -708,7 +1272,6 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         const minDistanceFromObstacles = 100;
         let attempts = 0;
         let validPosition = false;
-        
 
         while (!validPosition && attempts < 50) {
             validPosition = true;
@@ -727,7 +1290,6 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
 
         this.headSprite.setPosition(carX, carY);
         this.headAngle = 0;
-        
 
         // Delay first pickup spawn
         this.time.delayedCall(1000, () => {
@@ -737,7 +1299,7 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
 
     private buildDebugModal() {
         const modalW = 280;
-        const modalH = 500; // Adjusted for removed trick debug buttons
+        const modalH = 570; // Increased from 530 to fit score details button
         const mx = (this.width - modalW) / 2;
         const my = (this.height - modalH) / 2;
 
@@ -892,6 +1454,41 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
 
         cy += rowH + 4;
 
+        const thresholdBtn = this.add.text(this.width / 2, cy, 'Trick Threshold: OFF', {
+            ...btnStyle, padding: { x: 16, y: 6 },
+        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
+        thresholdBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            pointer.event.stopPropagation();
+            this.showTrickThreshold = !this.showTrickThreshold;
+            if (this.showTrickThreshold) {
+                thresholdBtn.setText('Trick Threshold: ON');
+            } else {
+                thresholdBtn.setText('Trick Threshold: OFF');
+                this.trickThresholdGraphics.clear(); // Clear when disabled
+            }
+        });
+        this.debugModalContainer.add(thresholdBtn);
+
+        cy += rowH + 4;
+
+        const scoreDetailsBtn = this.add.text(this.width / 2, cy, 'Score Details: OFF', {
+            ...btnStyle, padding: { x: 16, y: 6 },
+        }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
+        scoreDetailsBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            pointer.event.stopPropagation();
+            this.showScoreDetails = !this.showScoreDetails;
+            if (this.showScoreDetails) {
+                scoreDetailsBtn.setText('Score Details: ON');
+                this.scoreDetailsText.setVisible(true);
+            } else {
+                scoreDetailsBtn.setText('Score Details: OFF');
+                this.scoreDetailsText.setVisible(false);
+            }
+        });
+        this.debugModalContainer.add(scoreDetailsBtn);
+
+        cy += rowH + 4;
+
         const collisionBtn = this.add.text(this.width / 2, cy, 'Collisions: ON', {
             ...btnStyle, padding: { x: 16, y: 6 },
         }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
@@ -961,6 +1558,19 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         this.boostBarDisplay = this.boostMax;
         this.tireMarkIntensity = 0;
         if (this.soundManager) this.soundManager.stopAll();
+
+        // Reset trick system
+        this.trickHistory = [];
+        this.currentComboMultiplier = 1;
+        this.lastTrickTime = 0;
+        this.isDrifting = false;
+        this.nearMissTracking.clear();
+        this.recentlyCollidedObstacles.clear();
+        this.activeTricks.clear();
+        this.bufferedTricks = [];
+        this.crashedDuringDrift = false;
+        this.handbrakeStartTime = 0;
+        this.nitroStartTime = 0;
 
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
 
@@ -1492,6 +2102,30 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             this.timeRemaining = Math.min(this.timeRemaining + this.pickupTimeBonus, 99);
             this.boostFuel = Math.min(this.boostMax, this.boostFuel + this.boostRefillAmount);
             
+            // Cappy Crash trick - collecting trophy while boosting
+            if (this.boostIntensity > 0.01) {
+                // Add to active tricks first to show in combo
+                this.activeTricks.set('CAPPY_CRASH', 1);
+                this.updateTrickComboDisplay(); // Show "Cappy Crash..." in display
+                
+                // Execute immediately after a brief moment to show the trick
+                this.time.delayedCall(100, () => {
+                    this.activeTricks.delete('CAPPY_CRASH');
+                    this.executeTrick('CAPPY_CRASH');
+                    
+                    // Show score popup
+                    const hx = this.headSprite.x;
+                    const hy = this.headSprite.y;
+                    this.showScorePopup(hx, hy - 40, this.TRICKS.CAPPY_CRASH.baseScore);
+                    
+                    // Play trick sound
+                    this.playTrickSound();
+                    
+                    this.updateTrickComboDisplay();
+                    console.log('[CAPPY CRASH] Trophy collected while boosting! +100 pts');
+                });
+            }
+            
             this.showTimeBonusPopup(this.pickupX, this.pickupY);
             this.spawnPickup();
             this.collectSound.play({ volume: .9 });
@@ -1513,12 +2147,14 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         this.carShadow.setScale(0.95, 1); // Slightly squashed like decorations
         this.carShadow.setPosition(hx + 4, hy + 58); // Offset to bottom-right
 
-        // Update score text
-        this.scoreText.setText(`Score: ${this.score}`);
+        // Update score text with combo multiplier
+        const comboText = this.currentComboMultiplier > 1 ? ` (x${this.currentComboMultiplier.toFixed(1)})` : '';
+        this.scoreText.setText(`Score: ${this.score}${comboText}`);
         
         if (this.debugText) {
+            const driftIndicator = this.isDrifting ? ' [DRIFT]' : '';
             this.debugText.setText(
-                `Spd: ${Math.round(speed)}  Thrust: ${this.forwardThrust}`
+                `Spd: ${Math.round(speed)}  Thrust: ${this.forwardThrust}${driftIndicator}`
             );
         }
 
@@ -1563,6 +2199,43 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         const stoppingTarget = brakeInput ? 1 : 0;
         this.soundManager.setLayerTarget('stopping', stoppingTarget);
         
+        // --- Trick System ---
+        this.updateDriftState();
+        this.checkNearMiss();
+        this.checkHandbrake(brakeInput); // Track handbrake trick
+        this.checkNitro(this.boostIntensity > 0.01); // Track nitro trick
+        
+        // Finalize trick session AFTER all trick updates have run
+        // This ensures active tricks have been moved to buffered
+        this.finalizeTrickSession();
+        
+        // Update score details debug display if enabled
+        if (this.showScoreDetails) {
+            this.updateScoreDetailsDisplay();
+        }
+        
+        // Draw trick threshold zones if debug enabled
+        if (this.showTrickThreshold) {
+            this.trickThresholdGraphics.clear();
+            this.trickThresholdGraphics.lineStyle(2, 0x00ff00, 0.6); // Green semi-transparent outline
+            this.trickThresholdGraphics.fillStyle(0x00ff00, 0.1); // Very transparent green fill
+            
+            for (const obstacle of this.decorations) {
+                const obstacleBody = obstacle.body as Phaser.Physics.Arcade.Body;
+                
+                // Draw a rectangle showing the threshold zone around the obstacle
+                const zoneX = obstacleBody.x - this.nearMissThreshold;
+                const zoneY = obstacleBody.y - this.nearMissThreshold;
+                const zoneW = obstacleBody.width + (this.nearMissThreshold * 2);
+                const zoneH = obstacleBody.height + (this.nearMissThreshold * 2);
+                
+                this.trickThresholdGraphics.strokeRect(zoneX, zoneY, zoneW, zoneH);
+                this.trickThresholdGraphics.fillRect(zoneX, zoneY, zoneW, zoneH);
+            }
+        } else {
+            this.trickThresholdGraphics.clear();
+        }
+        
         this.soundManager.update(dt);
     }
 
@@ -1597,6 +2270,36 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
         });
     }
 
+    private showScorePopup(x: number, y: number, score: number) {
+        const popup = this.add.text(x, y, `+${score}`, {
+            fontFamily: 'Arial Black',
+            fontSize: 32,
+            color: '#ffdd00', // Yellow like combo text
+            stroke: '#000000',
+            strokeThickness: 4,
+            align: 'center',
+        }).setOrigin(0.5).setDepth(15).setAlpha(0).setScale(0.3);
+
+        this.tweens.add({
+            targets: popup,
+            alpha: 1,
+            scale: 1.3,
+            y: y - 50,
+            duration: 350,
+            ease: 'Back.easeOut',
+            onComplete: () => {
+                this.tweens.add({
+                    targets: popup,
+                    alpha: 0,
+                    scale: 0.7,
+                    y: y - 90,
+                    duration: 450,
+                    ease: 'Quad.easeIn',
+                    onComplete: () => popup.destroy(),
+                });
+            },
+        });
+    }
 
     private endGame() {
         this.gameOver = true;
@@ -1681,6 +2384,32 @@ private spawnObstacles(existingPositions: { x: number, y: number }[] = []) {
             delay: 300,
             ease: 'Quad.easeOut',
         });
+
+        // Show trick summary if any tricks were performed
+        if (this.trickHistory.length > 0) {
+            const trickCount = this.trickHistory.length;
+            const trickScore = this.trickHistory.reduce((sum, t) => sum + t.score, 0);
+            const trickSummary = this.add.text(
+                this.width / 2, 
+                this.height / 2 + 65, 
+                `${trickCount} Tricks: ${trickScore} pts`,
+                {
+                    fontFamily: 'Arial',
+                    fontSize: 18,
+                    color: '#ffdd00',
+                    stroke: '#000000',
+                    strokeThickness: 3,
+                }
+            ).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+
+            this.tweens.add({
+                targets: trickSummary,
+                alpha: 1,
+                duration: 400,
+                delay: 500,
+                ease: 'Quad.easeOut',
+            });
+        }
 
         this.playAgainBtn = this.add.text(this.width / 2, this.height / 2 + 100, 'Play Again', {
             fontFamily: 'Arial Black',
