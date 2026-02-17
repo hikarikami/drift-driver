@@ -70,7 +70,7 @@ export class Game extends Scene {
     private networkRole: 'host' | 'guest' | 'none' = 'none';
     private net?: NetworkManager;
     private networkSendTimer = 0;
-    private readonly networkSendRate = 1 / 30;  // 30 state packets/sec from host
+    private readonly networkSendRate = 1 / 60;  // 60 state packets/sec from host
     private lastReceivedState?: StatePacket;
 
     constructor() {
@@ -152,27 +152,37 @@ export class Game extends Scene {
             },
         });
 
-        // --- Collisions (each player vs obstacles) ---
-        for (const player of this.players) {
-            this.physics.add.collider(
-                player.car.headSprite,
-                this.scenery.obstacleHitboxes,
-                (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
-            );
-        }
+        // --- Collisions (host and local only — guest doesn't run physics) ---
+        if (this.networkRole !== 'guest') {
+            for (const player of this.players) {
+                this.physics.add.collider(
+                    player.car.headSprite,
+                    this.scenery.obstacleHitboxes,
+                    (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
+                );
+            }
 
-        // --- Player-vs-player collision in battle mode ---
-        if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
-            this.physics.add.collider(
-                this.players[0].car.headSprite,
-                this.players[1].car.headSprite,
-                () => this.handlePlayerVsPlayerCollision()
-            );
+            // Player-vs-player collision in battle/online mode
+            if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
+                this.physics.add.collider(
+                    this.players[0].car.headSprite,
+                    this.players[1].car.headSprite,
+                    () => this.handlePlayerVsPlayerCollision()
+                );
+            }
         }
 
         // --- Network setup (online mode) ---
         if (this.mode === 'online') {
             this.setupNetwork();
+
+            // Guest: disable physics on all car bodies — positions come from host
+            if (this.networkRole === 'guest') {
+                for (const player of this.players) {
+                    const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
+                    body.enable = false;
+                }
+            }
         }
 
         // Delay first pickup spawn
@@ -199,7 +209,8 @@ export class Game extends Scene {
         car.carSprite = this.add.image(0, 0, initialFrame).setDepth(4);
 
         // Let CarController configure all physics (drag, bounce, mass, etc.)
-        car.setupBody(this.mode);
+        // Online mode uses same physics as battle
+        car.setupBody(this.mode === 'single' ? 'single' : 'battle');
 
         // Find safe spawn position — offset players in battle mode
         let spawnX = this.width / 2;
@@ -361,39 +372,37 @@ export class Game extends Scene {
         this.net.sendInput(packet);
     }
 
+    // Track interpolation targets for smooth rendering on guest
+    private interpTargets: CarState[] = [];
+    private interpPrevious: CarState[] = [];
+    private interpProgress = 0;
+
     /** Guest: apply received state from host to all game objects */
     private applyReceivedState() {
         if (!this.lastReceivedState) return;
         const state = this.lastReceivedState;
 
-        // Apply car positions/velocities
+        // Store previous targets as starting point for interpolation
+        this.interpPrevious = this.interpTargets.length > 0
+            ? [...this.interpTargets]
+            : state.cars.map((cs: CarState) => ({ ...cs }));
+
+        // New targets from host
+        this.interpTargets = state.cars.map((cs: CarState) => ({ ...cs }));
+        this.interpProgress = 0;
+
+        // Sync non-interpolated state immediately
         for (let i = 0; i < state.cars.length && i < this.players.length; i++) {
             const cs = state.cars[i];
             const car = this.players[i].car;
-            const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
 
-            // Interpolate position toward received state for smoothness
-            const lerpFactor = 0.3;
-            car.headSprite.x += (cs.x - car.headSprite.x) * lerpFactor;
-            car.headSprite.y += (cs.y - car.headSprite.y) * lerpFactor;
-
-            // Snap velocity directly (acceleration handles the rest)
-            body.setVelocity(cs.vx, cs.vy);
-
-            // Interpolate angle
-            car.headAngle += (cs.angle - car.headAngle) * lerpFactor;
-            car.angularVel = cs.angularVel;
-
-            // Sync state
             car.boostFuel = cs.boostFuel;
             car.boostIntensity = cs.boostIntensity;
             car.tireMarkIntensity = cs.tireMarkIntensity;
 
-            // Update scores
             this.players[i].score = state.scores[i] ?? 0;
         }
 
-        // Sync timer
         this.timeRemaining = state.timeRemaining;
 
         // Sync pickup position
@@ -408,12 +417,40 @@ export class Game extends Scene {
             }
         }
 
-        // Game over
         if (state.gameOver && !this.gameOver) {
             this.endGame();
         }
 
         this.lastReceivedState = undefined;
+    }
+
+    /** Guest: smoothly interpolate car positions between state packets */
+    private interpolateGuestCars(dt: number) {
+        if (this.interpTargets.length === 0) return;
+
+        // Advance interpolation (complete in ~1 send interval)
+        this.interpProgress = Math.min(1, this.interpProgress + dt / this.networkSendRate);
+        const t = this.interpProgress;
+
+        for (let i = 0; i < this.interpTargets.length && i < this.players.length; i++) {
+            const prev = this.interpPrevious[i];
+            const target = this.interpTargets[i];
+            if (!prev || !target) continue;
+
+            const car = this.players[i].car;
+
+            // Smooth interpolation between last and current state
+            car.headSprite.x = prev.x + (target.x - prev.x) * t;
+            car.headSprite.y = prev.y + (target.y - prev.y) * t;
+
+            // Angle interpolation (handle wraparound)
+            let angleDiff = target.angle - prev.angle;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            car.headAngle = prev.angle + angleDiff * t;
+
+            car.angularVel = target.angularVel;
+        }
     }
 
     // ========== COLLISION ==========
@@ -496,12 +533,13 @@ export class Game extends Scene {
             return;
         }
 
-        // === GUEST: apply state from host, send input, then just render ===
+        // === GUEST: apply state from host, interpolate, send input, render ===
         if (this.networkRole === 'guest') {
             this.applyReceivedState();
+            this.interpolateGuestCars(dt);
             this.sendInputToHost();
 
-            // Still update sprites, particles, UI from the received state
+            // Update sprites and particles from interpolated positions
             for (const player of this.players) {
                 player.car.updateCarSprite();
                 const input = player.car.readInput();
@@ -510,7 +548,7 @@ export class Game extends Scene {
             this.ui.updateTimer(this.timeRemaining);
             this.ui.updateScore(this.players[0].score, this.players[1]?.score);
 
-            // Boost bar for local player (player 2 for guest)
+            // Boost bar for local player
             const localPlayer = this.players.find(p => p.config.inputSource === 'keyboard');
             if (localPlayer) {
                 const barLerp = 1 - Math.exp(-6 * dt);
