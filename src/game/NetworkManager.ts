@@ -45,7 +45,8 @@ export interface StatePacket {
 
 export interface StartPacket {
     type: 'start';
-    seed: number;              // shared RNG seed for scenery placement
+    seed: number;              // shared RNG seed (legacy, kept for compat)
+    sceneryData: any;          // SceneryData from host's SceneryManager
 }
 
 export interface LobbyPacket {
@@ -53,18 +54,24 @@ export interface LobbyPacket {
     status: 'ready' | 'start';
 }
 
-export type NetMessage = InputPacket | StatePacket | StartPacket | LobbyPacket;
+export interface SceneryPacket {
+    type: 'scenery';
+    sceneryData: any;
+}
+
+export type NetMessage = InputPacket | StatePacket | StartPacket | LobbyPacket | SceneryPacket;
 
 // ========== EVENTS ==========
 
 export type NetworkEvent =
-    | 'connected'       // peer connected
-    | 'disconnected'    // peer disconnected
-    | 'input'           // received InputPacket (host only)
-    | 'state'           // received StatePacket (guest only)
-    | 'start'           // received StartPacket (guest only)
-    | 'lobby'           // received LobbyPacket
-    | 'error';          // error occurred
+    | 'connected'
+    | 'disconnected'
+    | 'input'
+    | 'state'
+    | 'start'
+    | 'lobby'
+    | 'scenery'
+    | 'error';
 
 type EventCallback = (data?: any) => void;
 
@@ -184,11 +191,12 @@ export class NetworkManager {
         conn.on('data', (data: unknown) => {
             const msg = data as NetMessage;
             switch (msg.type) {
-                case 'input':  this.emit('input', msg); break;
-                case 'state':  this.emit('state', msg); break;
-                case 'start':  this.emit('start', msg); break;
-                case 'lobby':  this.emit('lobby', msg); break;
-                default:       console.warn('[Net] Unknown message type:', msg);
+                case 'input':   this.emit('input', msg); break;
+                case 'state':   this.emit('state', msg); break;
+                case 'start':   this.emit('start', msg); break;
+                case 'lobby':   this.emit('lobby', msg); break;
+                case 'scenery': this.emit('scenery', msg); break;
+                default:        console.warn('[Net] Unknown message type:', msg);
             }
         });
 

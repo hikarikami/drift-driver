@@ -185,11 +185,10 @@ export class OnlineLobby extends Scene {
     private startOnlineGame() {
         if (!this.guestReady) return;
 
-        // Generate a shared seed for deterministic scenery placement
         const seed = Math.floor(Math.random() * 999999);
 
-        // Tell guest to start
-        this.net.send({ type: 'start', seed });
+        // Tell guest to start (scenery data will be sent by Game scene once built)
+        this.net.send({ type: 'start', seed, sceneryData: null });
 
         // Start host game
         this.scene.start('Game', {

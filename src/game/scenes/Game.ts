@@ -12,7 +12,7 @@ import {
 } from './GameConfig';
 import {
     getNetworkManager, destroyNetworkManager,
-    NetworkManager, InputPacket, StatePacket, CarState,
+    NetworkManager, InputPacket, StatePacket, CarState, SceneryPacket,
 } from '../NetworkManager';
 
 // ========== Per-player state bundle ==========
@@ -72,16 +72,21 @@ export class Game extends Scene {
     private networkSendTimer = 0;
     private readonly networkSendRate = 1 / 60;  // 60 state packets/sec from host
     private lastReceivedState?: StatePacket;
+    private sceneryRebuilt = false;
+
+    // Scenery data for network sync
+    private sceneryData?: any;
 
     constructor() {
         super('Game');
     }
 
-    init(data: { sessionConfig?: GameSessionConfig; networkRole?: 'host' | 'guest'; seed?: number }) {
+    init(data: { sessionConfig?: GameSessionConfig; networkRole?: 'host' | 'guest'; seed?: number; sceneryData?: any }) {
         // Accept config from MainMenu or OnlineLobby
         this.sessionConfig = data.sessionConfig ?? createSinglePlayerConfig();
         this.mode = this.sessionConfig.mode;
         this.networkRole = data.networkRole ?? 'none';
+        this.sceneryData = data.sceneryData;
     }
 
     create() {
@@ -94,9 +99,13 @@ export class Game extends Scene {
         // --- Sound & Music ---
         this.setupAudio();
 
-        // --- Scenery ---
+        // --- Scenery (use network data if guest, otherwise generate) ---
         this.scenery = new SceneryManager(this, this.width, this.height);
-        this.scenery.buildIsometricBackground();
+        const generatedScenery = this.scenery.buildIsometricBackground(this.sceneryData);
+        // Store for sending to guest if we're host
+        if (this.networkRole === 'host') {
+            this.sceneryData = generatedScenery;
+        }
 
         // --- Canvas focus ---
         const canvas = this.sys.game.canvas;
@@ -284,7 +293,6 @@ export class Game extends Scene {
         if (this.networkRole === 'host') {
             // Host receives input packets from guest
             this.net.on('input', (packet: InputPacket) => {
-                // Find the remote player (player 2 for host)
                 const remotePlayer = this.players.find(p => p.config.inputSource === 'remote');
                 if (remotePlayer) {
                     remotePlayer.car.setRemoteInput({
@@ -297,8 +305,10 @@ export class Game extends Scene {
                 }
             });
 
+            // Send scenery data to guest so they render identical obstacles
+            this.net.send({ type: 'scenery', sceneryData: this.sceneryData });
+
             this.net.on('disconnected', () => {
-                // Pause or show disconnect message
                 if (!this.gameOver) {
                     this.ui.showDisconnectMessage?.();
                 }
@@ -309,6 +319,16 @@ export class Game extends Scene {
             // Guest receives state packets from host
             this.net.on('state', (packet: StatePacket) => {
                 this.lastReceivedState = packet;
+            });
+
+            // Guest receives scenery data — rebuild scenery with host's layout
+            this.net.on('scenery', (packet: any) => {
+                if (packet.sceneryData && !this.sceneryRebuilt) {
+                    this.sceneryRebuilt = true;
+                    // Clear existing scenery and rebuild with host's data
+                    this.scenery.clearAll();
+                    this.scenery.buildIsometricBackground(packet.sceneryData);
+                }
             });
 
             this.net.on('disconnected', () => {
