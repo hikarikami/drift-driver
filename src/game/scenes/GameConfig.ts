@@ -1,14 +1,14 @@
 /**
  * Shared configuration types for game modes and player setup.
- * Designed to support local multiplayer now and PeerJS networking later.
+ * Supports: single player, local battle, and online battle (PeerJS).
  */
 
-export type GameMode = 'single' | 'battle';
+export type GameMode = 'single' | 'battle' | 'online';
 
 /**
  * Input source tells the car controller where to get its input from.
  * - 'keyboard': local keyboard with specific key bindings
- * - 'remote': input will be provided externally (for future PeerJS)
+ * - 'remote': input will be provided externally via network
  */
 export type InputSource = 'keyboard' | 'remote';
 
@@ -33,7 +33,7 @@ export interface GameSessionConfig {
     players: PlayerConfig[];
 }
 
-// ========== PRESETS ==========
+// ========== KEY PRESETS ==========
 
 export const PLAYER1_KEYS: KeyBindings = {
     up: 'W',
@@ -53,6 +53,18 @@ export const PLAYER2_KEYS: KeyBindings = {
     brake: 188,       // Comma key (,)
 };
 
+// Dummy keys for remote player (never read from keyboard)
+const REMOTE_KEYS: KeyBindings = {
+    up: 'NUMPAD_0',
+    down: 'NUMPAD_0',
+    left: 'NUMPAD_0',
+    right: 'NUMPAD_0',
+    boost: 'NUMPAD_0',
+    brake: 'NUMPAD_0',
+};
+
+// ========== CONFIG FACTORIES ==========
+
 export function createSinglePlayerConfig(): GameSessionConfig {
     return {
         mode: 'single',
@@ -60,14 +72,7 @@ export function createSinglePlayerConfig(): GameSessionConfig {
             {
                 id: 1,
                 inputSource: 'keyboard',
-                keys: {
-                    up: 'W',
-                    down: 'S',
-                    left: 'A',
-                    right: 'D',
-                    boost: 'SHIFT',
-                    brake: 'SPACE',
-                },
+                keys: PLAYER1_KEYS,
                 spritePrefix: 'car-1',
             },
         ],
@@ -88,6 +93,54 @@ export function createBattleConfig(): GameSessionConfig {
                 id: 2,
                 inputSource: 'keyboard',
                 keys: PLAYER2_KEYS,
+                spritePrefix: 'car-2',
+            },
+        ],
+    };
+}
+
+/**
+ * Online host: Player 1 is local keyboard, Player 2 is remote (input from network).
+ */
+export function createOnlineHostConfig(): GameSessionConfig {
+    return {
+        mode: 'online',
+        players: [
+            {
+                id: 1,
+                inputSource: 'keyboard',
+                keys: PLAYER1_KEYS,
+                spritePrefix: 'car-1',
+            },
+            {
+                id: 2,
+                inputSource: 'remote',
+                keys: REMOTE_KEYS,
+                spritePrefix: 'car-2',
+            },
+        ],
+    };
+}
+
+/**
+ * Online guest: Player 1 is remote (state from network), Player 2 is local keyboard.
+ * Note: the guest uses PLAYER1_KEYS (WASD) for their own car, since they're the only
+ * local player. The "remote" player 1 is the host's car rendered from state packets.
+ */
+export function createOnlineGuestConfig(): GameSessionConfig {
+    return {
+        mode: 'online',
+        players: [
+            {
+                id: 1,
+                inputSource: 'remote',
+                keys: REMOTE_KEYS,
+                spritePrefix: 'car-1',
+            },
+            {
+                id: 2,
+                inputSource: 'keyboard',
+                keys: PLAYER1_KEYS,    // Guest uses WASD
                 spritePrefix: 'car-2',
             },
         ],

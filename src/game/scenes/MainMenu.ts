@@ -71,6 +71,27 @@ export class MainMenu extends Scene {
             () => this.startGame(createBattleConfig())
         );
 
+        this.createButton(
+            this.width / 2,
+            buttonY + buttonSpacing * 2,
+            'ONLINE',
+            '#3366cc',
+            '#4488ee',
+            () => this.scene.start('OnlineLobby', { role: 'host' })
+        );
+
+        // --- Auto-join if URL has ?join=PEERID ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const joinId = urlParams.get('join');
+        if (joinId) {
+            // Clear the URL param so refreshing doesn't re-join
+            const cleanUrl = window.location.pathname;
+            window.history.replaceState({}, '', cleanUrl);
+            // Go straight to lobby as guest
+            this.scene.start('OnlineLobby', { role: 'join', hostId: joinId });
+            return;
+        }
+
         // --- Controls hint ---
         // --- Controls tables (bottom) ---
         const bottomPadding = 56;          // space above the version text

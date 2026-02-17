@@ -326,4 +326,25 @@ export class UIManager {
         for (const el of this.resultElements) { el.destroy(); }
         this.resultElements = [];
     }
+
+    /**
+     * Shows a disconnect notification for online mode
+     */
+    showDisconnectMessage() {
+        const msg = this.scene.add.text(this.width / 2, this.height / 2, 'OPPONENT DISCONNECTED', {
+            fontFamily: 'Arial Black',
+            fontSize: 32,
+            color: '#ff4444',
+            stroke: '#000000',
+            strokeThickness: 5,
+            align: 'center',
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(20).setAlpha(0);
+
+        this.scene.tweens.add({
+            targets: msg,
+            alpha: 1,
+            duration: 400,
+            ease: 'Quad.easeOut',
+        });
+    }
 }

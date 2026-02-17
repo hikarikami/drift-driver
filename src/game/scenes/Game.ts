@@ -10,6 +10,10 @@ import {
     GameSessionConfig, GameMode, PlayerConfig,
     createSinglePlayerConfig, PLAYER1_KEYS,
 } from './GameConfig';
+import {
+    getNetworkManager, destroyNetworkManager,
+    NetworkManager, InputPacket, StatePacket, CarState,
+} from '../NetworkManager';
 
 // ========== Per-player state bundle ==========
 
@@ -62,14 +66,22 @@ export class Game extends Scene {
     private crashSound2!: Phaser.Sound.BaseSound;
     private crashSound3!: Phaser.Sound.BaseSound;
 
+    // Network (online mode only)
+    private networkRole: 'host' | 'guest' | 'none' = 'none';
+    private net?: NetworkManager;
+    private networkSendTimer = 0;
+    private readonly networkSendRate = 1 / 30;  // 30 state packets/sec from host
+    private lastReceivedState?: StatePacket;
+
     constructor() {
         super('Game');
     }
 
-    init(data: { sessionConfig?: GameSessionConfig }) {
-        // Accept config from MainMenu, or default to single player
+    init(data: { sessionConfig?: GameSessionConfig; networkRole?: 'host' | 'guest'; seed?: number }) {
+        // Accept config from MainMenu or OnlineLobby
         this.sessionConfig = data.sessionConfig ?? createSinglePlayerConfig();
         this.mode = this.sessionConfig.mode;
+        this.networkRole = data.networkRole ?? 'none';
     }
 
     create() {
@@ -150,11 +162,17 @@ export class Game extends Scene {
         }
 
         // --- Player-vs-player collision in battle mode ---
-        if (this.mode === 'battle' && this.players.length >= 2) {
+        if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
             this.physics.add.collider(
                 this.players[0].car.headSprite,
-                this.players[1].car.headSprite
+                this.players[1].car.headSprite,
+                () => this.handlePlayerVsPlayerCollision()
             );
+        }
+
+        // --- Network setup (online mode) ---
+        if (this.mode === 'online') {
+            this.setupNetwork();
         }
 
         // Delay first pickup spawn
@@ -165,7 +183,7 @@ export class Game extends Scene {
 
     private createPlayer(config: PlayerConfig): PlayerState {
         const spritePrefix = config.spritePrefix ?? 'car-1';
-        const car = new CarController(this, this.width, this.height, config.keys, config.id, spritePrefix);
+        const car = new CarController(this, this.width, this.height, config.keys, config.id, spritePrefix, config.inputSource);
 
         // Create car physics body (invisible rectangle hitbox)
         car.headSprite = this.add.rectangle(0, 0, car.hitboxWidth, car.hitboxHeight, 0x00ff88, 0) as unknown as Phaser.GameObjects.Arc;
@@ -174,20 +192,14 @@ export class Game extends Scene {
         // Set the physics body to match the rectangle size
         const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
         body.setSize(car.hitboxWidth, car.hitboxHeight);
-        // body.setOffset(-car.hitboxWidth / 12 , -car.hitboxHeight / 12);
 
         // Create car visuals using player's sprite set
         const initialFrame = `${spritePrefix}_000`;
         car.carShadow = this.scenery.createDynamicShadow(0, 0, initialFrame, 3);
         car.carSprite = this.add.image(0, 0, initialFrame).setDepth(4);
 
-        // Setup physics body
-       
-        body.setCollideWorldBounds(false);
-        body.setBounce(0.3, 0.3);
-        body.setMaxVelocity(car.boostMaxSpeed, car.boostMaxSpeed);
-        body.setDamping(true);
-        body.setDrag(car.drag, car.drag);
+        // Let CarController configure all physics (drag, bounce, mass, etc.)
+        car.setupBody(this.mode);
 
         // Find safe spawn position — offset players in battle mode
         let spawnX = this.width / 2;
@@ -253,6 +265,157 @@ export class Game extends Scene {
         });
     }
 
+    // ========== NETWORK (online mode) ==========
+
+    private setupNetwork() {
+        this.net = getNetworkManager();
+
+        if (this.networkRole === 'host') {
+            // Host receives input packets from guest
+            this.net.on('input', (packet: InputPacket) => {
+                // Find the remote player (player 2 for host)
+                const remotePlayer = this.players.find(p => p.config.inputSource === 'remote');
+                if (remotePlayer) {
+                    remotePlayer.car.setRemoteInput({
+                        turnInput: packet.turnInput,
+                        thrustInput: packet.thrustInput,
+                        brakeInput: packet.brakeInput,
+                        reverseInput: packet.reverseInput,
+                        isAccelerating: packet.isAccelerating,
+                    });
+                }
+            });
+
+            this.net.on('disconnected', () => {
+                // Pause or show disconnect message
+                if (!this.gameOver) {
+                    this.ui.showDisconnectMessage?.();
+                }
+            });
+        }
+
+        if (this.networkRole === 'guest') {
+            // Guest receives state packets from host
+            this.net.on('state', (packet: StatePacket) => {
+                this.lastReceivedState = packet;
+            });
+
+            this.net.on('disconnected', () => {
+                if (!this.gameOver) {
+                    this.ui.showDisconnectMessage?.();
+                }
+            });
+        }
+    }
+
+    /** Host: serialize and send game state to guest */
+    private sendStateToGuest() {
+        if (!this.net || this.networkRole !== 'host') return;
+
+        const carStates: CarState[] = this.players.map(p => {
+            const body = p.car.headSprite.body as Phaser.Physics.Arcade.Body;
+            return {
+                x: p.car.headSprite.x,
+                y: p.car.headSprite.y,
+                vx: body.velocity.x,
+                vy: body.velocity.y,
+                angle: p.car.headAngle,
+                angularVel: p.car.angularVel,
+                boostFuel: p.car.boostFuel,
+                boostIntensity: p.car.boostIntensity,
+                tireMarkIntensity: p.car.tireMarkIntensity,
+            };
+        });
+
+        const packet: StatePacket = {
+            type: 'state',
+            cars: carStates,
+            scores: this.players.map(p => p.score),
+            timeRemaining: this.timeRemaining,
+            pickupX: this.pickup.pickupX,
+            pickupY: this.pickup.pickupY,
+            gameOver: this.gameOver,
+        };
+
+        this.net.sendState(packet);
+    }
+
+    /** Guest: send local input to host */
+    private sendInputToHost() {
+        if (!this.net || this.networkRole !== 'guest') return;
+
+        // Find the local player (player 2 for guest)
+        const localPlayer = this.players.find(p => p.config.inputSource === 'keyboard');
+        if (!localPlayer) return;
+
+        const input = localPlayer.car.readInput();
+        const packet: InputPacket = {
+            type: 'input',
+            turnInput: input.turnInput,
+            thrustInput: input.thrustInput,
+            brakeInput: input.brakeInput,
+            reverseInput: input.reverseInput,
+            isAccelerating: input.isAccelerating,
+        };
+
+        this.net.sendInput(packet);
+    }
+
+    /** Guest: apply received state from host to all game objects */
+    private applyReceivedState() {
+        if (!this.lastReceivedState) return;
+        const state = this.lastReceivedState;
+
+        // Apply car positions/velocities
+        for (let i = 0; i < state.cars.length && i < this.players.length; i++) {
+            const cs = state.cars[i];
+            const car = this.players[i].car;
+            const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
+
+            // Interpolate position toward received state for smoothness
+            const lerpFactor = 0.3;
+            car.headSprite.x += (cs.x - car.headSprite.x) * lerpFactor;
+            car.headSprite.y += (cs.y - car.headSprite.y) * lerpFactor;
+
+            // Snap velocity directly (acceleration handles the rest)
+            body.setVelocity(cs.vx, cs.vy);
+
+            // Interpolate angle
+            car.headAngle += (cs.angle - car.headAngle) * lerpFactor;
+            car.angularVel = cs.angularVel;
+
+            // Sync state
+            car.boostFuel = cs.boostFuel;
+            car.boostIntensity = cs.boostIntensity;
+            car.tireMarkIntensity = cs.tireMarkIntensity;
+
+            // Update scores
+            this.players[i].score = state.scores[i] ?? 0;
+        }
+
+        // Sync timer
+        this.timeRemaining = state.timeRemaining;
+
+        // Sync pickup position
+        if (this.pickup) {
+            this.pickup.pickupX = state.pickupX;
+            this.pickup.pickupY = state.pickupY;
+            if (this.pickup.pickupSprite) {
+                this.pickup.pickupSprite.setPosition(state.pickupX, state.pickupY);
+            }
+            if (this.pickup.pickupShadow) {
+                this.pickup.pickupShadow.setPosition(state.pickupX - 4, state.pickupY + 7);
+            }
+        }
+
+        // Game over
+        if (state.gameOver && !this.gameOver) {
+            this.endGame();
+        }
+
+        this.lastReceivedState = undefined;
+    }
+
     // ========== COLLISION ==========
 
     private handlePlayerCollision(player: PlayerState, obstacle: any) {
@@ -280,6 +443,45 @@ export class Game extends Scene {
         }
     }
 
+    // ========== PLAYER-VS-PLAYER COLLISION ==========
+
+    private pvpLastCollisionTime = 0;
+    private pvpCrashSoundPlays = 0;
+    private pvpCrashSoundCooldownUntil = 0;
+
+    private handlePlayerVsPlayerCollision() {
+        const now = this.time.now;
+        // Shorter cooldown than obstacles — car battles should feel rapid
+        if (now - this.pvpLastCollisionTime < 300) return;
+        this.pvpLastCollisionTime = now;
+
+        const p1 = this.players[0];
+        const p2 = this.players[1];
+
+        // Use the new car-vs-car collision handler which returns max speed at impact
+        const speedAtImpact = p1.car.handlePlayerCollision(p2.car);
+
+        // Always play a crash sound — even low-speed bumps should be audible
+        const effectiveSoundSpeed = Math.max(speedAtImpact, 150);
+
+        // Play crash sound based on impact speed (same logic as obstacle hits)
+        if (now >= this.pvpCrashSoundCooldownUntil) {
+            if (effectiveSoundSpeed < 200) {
+                this.crashSound1.play({ volume: 0.5 });
+            } else if (effectiveSoundSpeed < 300) {
+                this.crashSound2.play({ volume: 0.6 });
+            } else {
+                this.crashSound3.play({ volume: 0.7 });
+            }
+
+            this.pvpCrashSoundPlays++;
+            if (this.pvpCrashSoundPlays >= this.crashSoundMaxPlays) {
+                this.pvpCrashSoundCooldownUntil = now + this.crashSoundCooldown;
+                this.pvpCrashSoundPlays = 0;
+            }
+        }
+    }
+
     // ========== UPDATE LOOP ==========
 
     update(_time: number, delta: number) {
@@ -293,6 +495,34 @@ export class Game extends Scene {
             this.soundManager.update(dt);
             return;
         }
+
+        // === GUEST: apply state from host, send input, then just render ===
+        if (this.networkRole === 'guest') {
+            this.applyReceivedState();
+            this.sendInputToHost();
+
+            // Still update sprites, particles, UI from the received state
+            for (const player of this.players) {
+                player.car.updateCarSprite();
+                const input = player.car.readInput();
+                player.particles.update(player.car, input.brakeInput);
+            }
+            this.ui.updateTimer(this.timeRemaining);
+            this.ui.updateScore(this.players[0].score, this.players[1]?.score);
+
+            // Boost bar for local player (player 2 for guest)
+            const localPlayer = this.players.find(p => p.config.inputSource === 'keyboard');
+            if (localPlayer) {
+                const barLerp = 1 - Math.exp(-6 * dt);
+                localPlayer.car.boostBarDisplay += (localPlayer.car.boostFuel - localPlayer.car.boostBarDisplay) * barLerp;
+                this.ui.updateBoostBar(localPlayer.car.boostBarDisplay, localPlayer.car.boostMax);
+            }
+
+            this.soundManager.update(dt);
+            return;
+        }
+
+        // === HOST or LOCAL: run full game simulation ===
 
         // --- Countdown timer ---
         this.timeRemaining -= dt;
@@ -308,7 +538,7 @@ export class Game extends Scene {
             this.updatePlayer(player, dt);
         }
 
-        // --- Sound (driven by player 1 for now) ---
+        // --- Sound (driven by local player 1) ---
         this.updateSound(this.players[0], dt);
 
         // --- Score display ---
@@ -321,6 +551,15 @@ export class Game extends Scene {
         // --- Debug ---
         const speed = (this.players[0].car.headSprite.body as Phaser.Physics.Arcade.Body).speed;
         this.debug.updateDebugText(speed);
+
+        // --- Network: host sends state to guest ---
+        if (this.networkRole === 'host') {
+            this.networkSendTimer += dt;
+            if (this.networkSendTimer >= this.networkSendRate) {
+                this.networkSendTimer = 0;
+                this.sendStateToGuest();
+            }
+        }
 
         this.soundManager.update(dt);
     }
@@ -392,8 +631,7 @@ export class Game extends Scene {
         for (const player of this.players) {
             const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
             body.setAcceleration(0, 0);
-            this.tweens.add({ targets: body.velocity, x: 0, y: 0, duration: 1500, ease: 'Quad.easeOut' });
-            this.tweens.add({ targets: player.car, currentSpeed: 0, duration: 1500, ease: 'Quad.easeOut' });
+            body.setDrag(400, 400);  // High drag to coast to stop
             player.particles.stopAll();
         }
 
@@ -428,6 +666,10 @@ export class Game extends Scene {
         // Stop all audio before switching scenes
         if (this.music?.isPlaying) this.music.stop();
         if (this.soundManager) this.soundManager.stopAll();
+        // Clean up network
+        if (this.networkRole !== 'none') {
+            destroyNetworkManager();
+        }
         this.scene.start('MainMenu');
     }
 }

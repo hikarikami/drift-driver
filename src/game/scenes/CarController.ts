@@ -1,5 +1,5 @@
 import { Scene } from 'phaser';
-import { KeyBindings, PLAYER1_KEYS } from './GameConfig';
+import { KeyBindings, InputSource, PLAYER1_KEYS } from './GameConfig';
 
 export interface CarInput {
     turnInput: number;
@@ -14,86 +14,126 @@ export class CarController {
 
     // Player identity
     playerId: number = 1;
-
-    // Sprite prefix for this player's car (e.g. 'car-1' or 'car-2')
     spritePrefix: string;
-
-    // Key bindings (configurable per player)
     private keys: KeyBindings;
 
-    // Car objects (created externally, passed in)
+    /** Where this car gets input from: 'keyboard' or 'remote' */
+    inputSource: InputSource = 'keyboard';
+
+    /** Buffer for remote input (written by NetworkManager, read by readInput) */
+    private remoteInput: CarInput = {
+        turnInput: 0,
+        thrustInput: false,
+        brakeInput: false,
+        reverseInput: false,
+        isAccelerating: false,
+    };
+
+    // Car objects (created externally by Game.ts)
     headSprite!: Phaser.GameObjects.Arc;
     carSprite!: Phaser.GameObjects.Image;
     carShadow!: Phaser.GameObjects.Image;
 
-    // Car state
-    headAngle!: number;
+    // === HEADING (manual — not tied to Arcade velocity direction) ===
+    headAngle: number = 0;
     angularVel = 0;
-    currentSpeed = 0;
+
+    // === STATE ===
     isAccelerating = false;
     boostFuel: number;
-    boostIntensity = 0.2;
+    boostIntensity = 0;
     boostBarDisplay: number;
     tireMarkIntensity = 0;
 
-    // Physics tuning
+    // === TUNING — exposed so DebugModal can tweak them ===
     forwardThrust = 325;
-    drag = 100;
+    drag = 160;
     maxSpeed = 310;
-    readonly headRadius = 10; // legacy, kept for compatibility
+
+    // Hitbox
     readonly hitboxWidth = 42;
     readonly hitboxHeight = 20;
+    readonly headRadius = 10;   // legacy compat
     readonly totalCarFrames = 48;
+
+    // Boost
     private readonly boostThrust = 600;
     readonly boostMaxSpeed = 512;
-    private readonly brakeFactor = 0.75;
-    readonly minSpeed = 0;
-    private readonly maxReverseSpeed = -125;
-    private readonly reverseAccel = 5;
-    private readonly acceleration = 6.25;
-    private readonly decelBase = 2.0;
-    private readonly decelMomentumFactor = 0.1;
-
-    // Boost gauge
     readonly boostMax = 1.25;
     private readonly boostDrainRate = 0.4;
     readonly boostRefillAmount = 0.35;
     private readonly boostRampUp = 5.0;
     private readonly boostRampDown = 3.5;
 
+    // Braking
+    private readonly brakeDragMultiplier = 5.0;
+    private readonly brakeSteerBoost = 1.2;
+
+    // Reverse
+    private readonly reverseThrust = 150;
+    private readonly maxReverseSpeed = 125;
+
     // Steering
     private readonly targetAngularVel = 4.0;
     private readonly minSteerFraction = 0.15;
-    private readonly steerSmoothing = 25;
-    private readonly returnSmoothing = 25;
-    private readonly maxDriftAngle = 3.5;
+    private readonly steerSmoothing = 35;
+    private readonly returnSmoothing = 35;
+    private readonly maxDriftAngle = 2.2;
     private readonly driftSoftness = 0.1;
-    private readonly gripRate = 2.5;
 
-    // Tire mark constants
+    // Grip
+    private readonly gripRate = 4.5;
+    private readonly brakeGripRate = 1.4;
+
+    // Tire marks (read by ParticleEffects)
     readonly rearWheelX = -4;
     readonly wheelSpreadY = 10;
+
+    // Collision tuning
+    readonly collisionMass = 1;
+    readonly battleBounce = 0.8;
+    readonly obstacleBounce = 0.4;
+
+    // Minimum speed — kept at 0 for pure Arcade
+    readonly minSpeed = 0;
 
     private width: number;
     private height: number;
 
-    constructor(scene: Scene, width: number, height: number, keys: KeyBindings = PLAYER1_KEYS, playerId: number = 1, spritePrefix: string = 'car-1') {
+    // Backward compat: currentSpeed is now a read-through to body.speed
+    get currentSpeed(): number {
+        if (!this.headSprite?.body) return 0;
+        return (this.headSprite.body as Phaser.Physics.Arcade.Body).speed;
+    }
+    set currentSpeed(_v: number) {
+        // No-op — speed is owned by Arcade. Setter kept so Game.ts
+        // endGame tween doesn't crash.
+    }
+
+    constructor(scene: Scene, width: number, height: number, keys: KeyBindings = PLAYER1_KEYS, playerId: number = 1, spritePrefix: string = 'car-1', inputSource: InputSource = 'keyboard') {
         this.scene = scene;
         this.width = width;
         this.height = height;
         this.keys = keys;
         this.playerId = playerId;
         this.spritePrefix = spritePrefix;
+        this.inputSource = inputSource;
         this.boostFuel = this.boostMax;
         this.boostBarDisplay = this.boostMax;
     }
 
-    /**
-     * Reads keyboard input using this player's key bindings and returns a CarInput struct.
-     * For single player, both WASD and arrows work.
-     * For battle mode, each player gets their own bindings.
-     */
+    // ================================================================
+    //  INPUT
+    // ================================================================
+
     readInput(): CarInput {
+        // Remote players: return the last received network input
+        if (this.inputSource === 'remote') {
+            this.isAccelerating = this.remoteInput.isAccelerating;
+            return { ...this.remoteInput };
+        }
+
+        // Local keyboard input
         const keyboard = this.scene.input.keyboard;
         let turnInput = 0;
         let thrustInput = false;
@@ -110,8 +150,7 @@ export class CarController {
 
             if (left.isDown) turnInput -= 1;
             if (right.isDown) turnInput += 1;
-            if (up.isDown) this.isAccelerating = true;
-            else this.isAccelerating = false;
+            this.isAccelerating = up.isDown;
             if (down.isDown) reverseInput = true;
             if (boost.isDown) thrustInput = true;
             if (brake.isDown) brakeInput = true;
@@ -121,28 +160,64 @@ export class CarController {
     }
 
     /**
-     * Allows external code to provide input directly (for future PeerJS remote players).
+     * Set remote input (called by NetworkManager when input packet arrives).
      */
+    setRemoteInput(input: CarInput) {
+        this.remoteInput = { ...input };
+    }
+
     applyInput(input: CarInput) {
         this.isAccelerating = input.isAccelerating;
     }
 
-    /**
-     * Handles reverse movement. Returns true if car is reversing (skip normal physics).
-     */
+    // ================================================================
+    //  BODY SETUP — called by Game.ts after physics body is created
+    // ================================================================
+
+    setupBody(mode: 'single' | 'battle') {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+
+        body.setCollideWorldBounds(false);
+        body.setMaxVelocity(this.boostMaxSpeed, this.boostMaxSpeed);
+
+        // Linear drag (px/s²), NOT damping fraction
+        body.setDamping(false);
+        body.setDrag(this.drag, this.drag);
+
+        body.setMass(this.collisionMass);
+        if (mode === 'battle') {
+            body.setBounce(this.battleBounce, this.battleBounce);
+        } else {
+            body.setBounce(this.obstacleBounce, this.obstacleBounce);
+        }
+    }
+
+    // ================================================================
+    //  REVERSE
+    // ================================================================
+
     updateReverse(dt: number, input: CarInput): boolean {
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
 
-        // Active reversing
-        if (input.reverseInput && this.currentSpeed <= 0) {
-            this.currentSpeed = Math.max(this.currentSpeed - this.reverseAccel * dt * 60, this.maxReverseSpeed);
+        // Forward speed along heading
+        const facingX = Math.cos(this.headAngle);
+        const facingY = Math.sin(this.headAngle);
+        const forwardSpeed = body.velocity.x * facingX + body.velocity.y * facingY;
 
-            const facingX = Math.cos(this.headAngle);
-            const facingY = Math.sin(this.headAngle);
+        if (input.reverseInput && forwardSpeed <= 5) {
+            body.setAcceleration(
+                -facingX * this.reverseThrust,
+                -facingY * this.reverseThrust
+            );
 
-            body.setVelocity(facingX * this.currentSpeed, facingY * this.currentSpeed);
-            body.setAcceleration(0, 0);
+            // Cap reverse speed
+            if (body.speed > this.maxReverseSpeed) {
+                const scale = this.maxReverseSpeed / body.speed;
+                body.velocity.x *= scale;
+                body.velocity.y *= scale;
+            }
 
+            // Slow steering while reversing
             if (input.turnInput !== 0) {
                 const adjustedTurnRate = this.targetAngularVel * 0.25;
                 this.angularVel += (input.turnInput * adjustedTurnRate - this.angularVel) * 0.05;
@@ -155,34 +230,21 @@ export class CarController {
             return true;
         }
 
-        // Coasting from reverse back to zero
-        if (this.currentSpeed < 0) {
-            this.currentSpeed = Math.min(this.currentSpeed + this.reverseAccel * 0.5 * dt * 60, 0);
-
-            const facingX = Math.cos(this.headAngle);
-            const facingY = Math.sin(this.headAngle);
-            body.setVelocity(facingX * this.currentSpeed, facingY * this.currentSpeed);
-            body.setAcceleration(0, 0);
-
-            this.updateCarSprite();
-            return true;
-        }
-
         return false;
     }
 
-    /**
-     * Main forward physics update: steering, drift, acceleration, boost, braking
-     */
+    // ================================================================
+    //  MAIN FORWARD UPDATE
+    // ================================================================
+
     updateForward(dt: number, input: CarInput) {
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setMaxSpeed(this.maxSpeed);
+        const speed = body.speed;
 
-        // --- Smooth steering (speed-dependent) ---
-        const speedRatio = Math.min(body.speed / this.maxSpeed, 1);
+        // ---- STEERING ----
+        const speedRatio = Math.min(speed / this.maxSpeed, 1);
         const steerScale = this.minSteerFraction + (1 - this.minSteerFraction) * speedRatio;
-
-        const speedFactor = this.currentSpeed / this.maxSpeed;
+        const speedFactor = Math.min(speed / this.maxSpeed, 1);
         const adjustedTurnRate = this.targetAngularVel * (0.6 + 0.4 * speedFactor);
 
         const targetAV = input.turnInput * adjustedTurnRate * steerScale;
@@ -190,8 +252,8 @@ export class CarController {
         const lerpFactor = 1 - Math.exp(-smoothRate * dt);
         this.angularVel += (targetAV - this.angularVel) * lerpFactor;
 
-        const currentSpeed = body.speed;
-        if (currentSpeed > 1) {
+        // Drift angle limiting
+        if (speed > 1) {
             const velAngle = Math.atan2(body.velocity.y, body.velocity.x);
             let drift = this.headAngle - velAngle;
             while (drift > Math.PI) drift -= Math.PI * 2;
@@ -212,111 +274,91 @@ export class CarController {
             }
         }
 
+        // Handbrake drift boost
+        if (input.brakeInput && input.turnInput !== 0) {
+            this.angularVel += input.turnInput * this.brakeSteerBoost * dt;
+        }
+
         this.headAngle += this.angularVel * dt;
         this.angularVel *= 0.95;
 
-        // --- Drift physics ---
+        // ---- GRIP: blend velocity toward heading ----
         const facingX = Math.cos(this.headAngle);
         const facingY = Math.sin(this.headAngle);
 
-        if (Math.abs(currentSpeed) > 1) {
-            const velDirX = body.velocity.x / currentSpeed;
-            const velDirY = body.velocity.y / currentSpeed;
-            const blend = 1 - Math.exp(-this.gripRate * dt);
+        if (speed > 1) {
+            const grip = input.brakeInput ? this.brakeGripRate : this.gripRate;
+            const velDirX = body.velocity.x / speed;
+            const velDirY = body.velocity.y / speed;
+            const blend = 1 - Math.exp(-grip * dt);
             const newDirX = velDirX + (facingX - velDirX) * blend;
             const newDirY = velDirY + (facingY - velDirY) * blend;
             const dirLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
             if (dirLen > 0.001) {
-                body.velocity.x = (newDirX / dirLen) * currentSpeed;
-                body.velocity.y = (newDirY / dirLen) * currentSpeed;
-            }
-        } else {
-            body.velocity.x = facingX * this.currentSpeed;
-            body.velocity.y = facingY * this.currentSpeed;
-        }
-
-        // --- Acceleration / Deceleration ---
-        if (this.isAccelerating) {
-            const sr = this.currentSpeed / this.maxSpeed;
-            const accelCurve = 1.0 - (sr * sr * 0.7);
-            const effectiveAccel = this.acceleration * accelCurve;
-            this.currentSpeed = Math.min(this.currentSpeed + effectiveAccel * dt * 60, this.maxSpeed);
-        } else {
-            if (this.currentSpeed > 0) {
-                const momentum = this.currentSpeed * this.decelMomentumFactor;
-                const decelRate = Math.max(this.decelBase - momentum, 0.3);
-                this.currentSpeed = Math.max(this.currentSpeed - decelRate * dt * 60, 0);
-            } else if (this.currentSpeed < 0) {
-                this.currentSpeed = Math.min(this.currentSpeed + this.reverseAccel * 2 * dt * 60, 0);
+                body.velocity.x = (newDirX / dirLen) * speed;
+                body.velocity.y = (newDirY / dirLen) * speed;
             }
         }
 
-        // --- Thrust / Handbrake ---
-        const brakeMinSpeed = this.minSpeed * 0.4;
+        // ---- BOOST ----
+        const wantsBoost = input.thrustInput && this.boostFuel > 0 && !input.brakeInput;
+        if (wantsBoost) {
+            this.boostIntensity = Math.min(1, this.boostIntensity + this.boostRampUp * dt);
+            this.boostFuel = Math.max(0, this.boostFuel - this.boostDrainRate * dt);
+        } else {
+            this.boostIntensity = Math.max(0, this.boostIntensity - this.boostRampDown * dt);
+        }
+
+        // ---- THRUST / DRAG / BRAKE ----
+        const t = this.boostIntensity;
+        const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * t;
+        const activeMaxSpeed = this.maxSpeed + (this.boostMaxSpeed - this.maxSpeed) * t;
+
+        body.setMaxSpeed(activeMaxSpeed);
 
         if (input.brakeInput) {
-            const driftTurnBoost = 2.0;
-            if (input.turnInput !== 0) {
-                this.angularVel += input.turnInput * driftTurnBoost * dt;
-            }
-
-            body.setAcceleration(facingX * this.forwardThrust * 0.2, facingY * this.forwardThrust * 0.2);
-            const brakeDamp = 1 - this.brakeFactor * dt * 2.5;
-            body.velocity.x *= brakeDamp;
-            body.velocity.y *= brakeDamp;
-
-            const curSpd = body.speed;
-            if (curSpd > 0 && curSpd < brakeMinSpeed) {
-                body.velocity.x *= brakeMinSpeed / curSpd;
-                body.velocity.y *= brakeMinSpeed / curSpd;
-            }
+            // Handbrake: high drag, tiny forward thrust to maintain slide
+            body.setDrag(this.drag * this.brakeDragMultiplier, this.drag * this.brakeDragMultiplier);
+            body.setAcceleration(facingX * thrust * 0.15, facingY * thrust * 0.15);
+        } else if (this.isAccelerating || wantsBoost) {
+            // Driving forward
+            body.setDrag(this.drag, this.drag);
+            body.setAcceleration(facingX * thrust, facingY * thrust);
         } else {
-            const wantsBoost = input.thrustInput && this.boostFuel > 0;
-            if (wantsBoost) {
-                this.boostIntensity = Math.min(1, this.boostIntensity + this.boostRampUp * dt);
-                this.boostFuel = Math.max(0, this.boostFuel - this.boostDrainRate * dt);
-            } else {
-                this.boostIntensity = Math.max(0, this.boostIntensity - this.boostRampDown * dt);
-            }
-
-            const t = this.boostIntensity;
-            const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * t;
-            const activeMaxSpeed = this.currentSpeed + (this.boostMaxSpeed - this.currentSpeed) * t;
-
-            body.setMaxSpeed(activeMaxSpeed);
-
-            if (this.isAccelerating || this.currentSpeed > 0) {
-                body.setAcceleration(facingX * thrust, facingY * thrust);
-            } else {
-                body.setAcceleration(0, 0);
-            }
-
-            const speed = body.speed;
-            if (speed < this.minSpeed && speed > 0) {
-                body.velocity.x *= this.minSpeed / speed;
-                body.velocity.y *= this.minSpeed / speed;
-            } else if (speed === 0) {
-                body.velocity.x = facingX * this.minSpeed;
-                body.velocity.y = facingY * this.minSpeed;
-            } else if (speed > this.currentSpeed && t === 0) {
-                body.velocity.x *= this.currentSpeed / speed;
-                body.velocity.y *= this.currentSpeed / speed;
-            }
+            // Coasting — Arcade drag decelerates naturally
+            body.setDrag(this.drag, this.drag);
+            body.setAcceleration(0, 0);
         }
 
-        // --- Wrap ---
-        this.scene.physics.world.wrap(this.headSprite, 0);
+        // ---- TIRE MARKS ----
+        this.updateTireMarks(input, speed, dt);
 
-        // --- Tire mark intensity ---
+        // ---- SPRITE + WRAP ----
+        this.updateCarSprite();
+
         const hx = this.headSprite.x;
         const hy = this.headSprite.y;
-        const speed = body.speed;
+        if (hx < 0) this.headSprite.setX(this.width);
+        if (hx > this.width) this.headSprite.setX(0);
+        if (hy < 0) this.headSprite.setY(this.height);
+        if (hy > this.height) this.headSprite.setY(0);
 
-        const velAngleMark = Math.atan2(body.velocity.y, body.velocity.x);
-        let driftAngle = this.headAngle - velAngleMark;
+        this.scene.physics.world.wrap(this.headSprite, 0);
+    }
+
+    // ================================================================
+    //  TIRE MARKS
+    // ================================================================
+
+    private updateTireMarks(input: CarInput, speed: number, dt: number) {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+
+        const velAngle = Math.atan2(body.velocity.y, body.velocity.x);
+        let driftAngle = this.headAngle - velAngle;
         while (driftAngle > Math.PI) driftAngle -= Math.PI * 2;
         while (driftAngle < -Math.PI) driftAngle += Math.PI * 2;
         const absDrift = Math.abs(driftAngle);
+
         const tireThreshold = 0.5;
         const tireFull = 1.0;
 
@@ -331,35 +373,30 @@ export class CarController {
         const tireRampSpeed = targetTireIntensity > this.tireMarkIntensity ? 2.4 : 6.5;
         const tireLerp = 1 - Math.exp(-tireRampSpeed * dt);
         this.tireMarkIntensity += (targetTireIntensity - this.tireMarkIntensity) * tireLerp;
-        if (targetTireIntensity === 0 && this.tireMarkIntensity < 1) this.tireMarkIntensity = 0;
-
-        // Update car sprite
-        this.updateCarSprite();
-
-        // Screen wrap
-        if (hx < 0) this.headSprite.setX(this.width);
-        if (hx > this.width) this.headSprite.setX(0);
-        if (hy < 0) this.headSprite.setY(this.height);
-        if (hy > this.height) this.headSprite.setY(0);
+        if (targetTireIntensity === 0 && this.tireMarkIntensity < 0.01) this.tireMarkIntensity = 0;
     }
 
-    /**
-     * Game-over coasting update
-     */
-    updateGameOver(dt: number) {
+    // ================================================================
+    //  GAME OVER
+    // ================================================================
+
+    updateGameOver(_dt: number) {
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        const coastDamp = 1 - 1.5 * dt;
-        body.velocity.x *= Math.max(coastDamp, 0);
-        body.velocity.y *= Math.max(coastDamp, 0);
-        if (body.speed < 2) { body.setVelocity(0, 0); body.setAcceleration(0, 0); }
+        body.setAcceleration(0, 0);
+        body.setDrag(400, 400);
+
+        if (body.speed < 2) {
+            body.setVelocity(0, 0);
+        }
 
         this.scene.physics.world.wrap(this.headSprite, 0);
         this.updateCarSprite();
     }
 
-    /**
-     * Updates the car sprite frame and shadow position based on current headAngle
-     */
+    // ================================================================
+    //  SPRITE
+    // ================================================================
+
     updateCarSprite() {
         const hx = this.headSprite.x;
         const hy = this.headSprite.y;
@@ -374,13 +411,13 @@ export class CarController {
         this.carShadow.setPosition(hx + 4, hy + 58);
     }
 
-    /**
-     * Resets car state for a new game
-     */
+    // ================================================================
+    //  RESET
+    // ================================================================
+
     reset(x: number, y: number) {
         this.headAngle = -Math.PI / 2;
         this.angularVel = 0;
-        this.currentSpeed = this.minSpeed;
         this.boostFuel = this.boostMax;
         this.boostIntensity = 0;
         this.boostBarDisplay = this.boostMax;
@@ -392,40 +429,91 @@ export class CarController {
         body.reset(x, y);
         body.setVelocity(0, 0);
         body.setMaxSpeed(this.maxSpeed);
-        body.setDrag(0, 0);
+        body.setDrag(this.drag, this.drag);
     }
 
-    /**
-     * Handles collision impact - speed loss and bounce
-     */
-    handleCollision(obstacle: any) {
-        const speedAtImpact = Math.abs(this.currentSpeed);
-        this.currentSpeed *= 0.2;
+    // ================================================================
+    //  COLLISION: car vs obstacle
+    //  Arcade bounce handles the physics natively.
+    //  We just add spin for game feel and return speed for sound.
+    // ================================================================
 
-        const carBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
+    handleCollision(_obstacle: any): number {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        const speedAtImpact = body.speed;
 
-        const dx = this.headSprite.x - obstacle.x;
-        const dy = this.headSprite.y - obstacle.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance > 0) {
-            const dirX = dx / distance;
-            const dirY = dy / distance;
-
-            let bounceForce;
-            if (speedAtImpact < 75) {
-                bounceForce = 320;
-            } else if (speedAtImpact < 175) {
-                bounceForce = 280;
-            } else if (speedAtImpact < 275) {
-                bounceForce = 250;
-            } else {
-                bounceForce = 230;
-            }
-
-            carBody.setVelocity(dirX * bounceForce, dirY * bounceForce);
-        }
+        // Spin on impact
+        const spin = Math.min(speedAtImpact / 300, 1) * 1.5;
+        this.angularVel += (Math.random() > 0.5 ? 1 : -1) * spin;
 
         return speedAtImpact;
+    }
+
+    // ================================================================
+    //  COLLISION: car vs car (battle mode)
+    //  Arcade bounce + mass handles the core velocity exchange.
+    //  We layer on an extra directional impulse so the aggressor
+    //  (faster + more head-on) knocks the victim harder.
+    // ================================================================
+
+    handlePlayerCollision(otherCar: CarController): number {
+        const myBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        const otherBody = otherCar.headSprite.body as Phaser.Physics.Arcade.Body;
+
+        const mySpeed = myBody.speed;
+        const otherSpeed = otherBody.speed;
+
+        // Collision normal
+        const dx = this.headSprite.x - otherCar.headSprite.x;
+        const dy = this.headSprite.y - otherCar.headSprite.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // Attack angle
+        const myFacingX = Math.cos(this.headAngle);
+        const myFacingY = Math.sin(this.headAngle);
+        const otherFacingX = Math.cos(otherCar.headAngle);
+        const otherFacingY = Math.sin(otherCar.headAngle);
+
+        const myAttack = Math.max(0, -(myFacingX * nx + myFacingY * ny));
+        const otherAttack = Math.max(0, (otherFacingX * nx + otherFacingY * ny));
+
+        // Aggressor determination
+        const myPower = mySpeed * (0.3 + 0.7 * myAttack);
+        const otherPower = otherSpeed * (0.3 + 0.7 * otherAttack);
+
+        // Extra impulse ON TOP of Arcade's native bounce
+        const extraImpulse = 120;
+        const speedBonus = (mySpeed + otherSpeed) * 0.25;
+        const totalExtra = extraImpulse + speedBonus;
+
+        if (myPower >= otherPower) {
+            // I'm the aggressor — victim gets extra push
+            otherBody.velocity.x += -nx * totalExtra;
+            otherBody.velocity.y += -ny * totalExtra;
+            myBody.velocity.x += nx * totalExtra * 0.3;
+            myBody.velocity.y += ny * totalExtra * 0.3;
+        } else {
+            myBody.velocity.x += nx * totalExtra;
+            myBody.velocity.y += ny * totalExtra;
+            otherBody.velocity.x += -nx * totalExtra * 0.3;
+            otherBody.velocity.y += -ny * totalExtra * 0.3;
+        }
+
+        // Spin both cars
+        const baseSpin = 0.6;
+        const extraSpin = 0.8;
+        const totalPower = (myPower + otherPower) || 1;
+        const myVictimRatio = otherPower / totalPower;
+        const otherVictimRatio = myPower / totalPower;
+
+        const mySpinDir = (nx * myFacingY - ny * myFacingX) > 0 ? 1 : -1;
+        const otherSpinDir = (-nx * otherFacingY + ny * otherFacingX) > 0 ? 1 : -1;
+
+        this.angularVel += mySpinDir * (baseSpin + extraSpin * myVictimRatio);
+        otherCar.angularVel += otherSpinDir * (baseSpin + extraSpin * otherVictimRatio);
+
+        return Math.max(mySpeed, otherSpeed);
     }
 }
