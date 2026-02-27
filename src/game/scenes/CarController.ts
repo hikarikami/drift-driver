@@ -261,6 +261,9 @@ export class CarController {
         if (wrapped) {
             this.headSprite.setPosition(x, y);
             body.updateFromGameObject();
+            // Sync prev so the physics engine doesn't think the body
+            // swept across the entire world this frame (causes ghost collisions).
+            body.prev.copy(body.position);
         }
     }
 
@@ -299,6 +302,7 @@ export class CarController {
 
             this.headAngle += this.angularVel * dt;
             this.updateCarSprite();
+            this.wrapHeadSprite();
             return true;
         }
 

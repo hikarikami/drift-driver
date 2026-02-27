@@ -173,8 +173,8 @@ export class TouchControls {
         Object.assign(this.container.style, {
             position: 'fixed',
             bottom: '0',
-            left: '0',
-            right: '0',
+            left: '-24px',
+            right: '-24px',
             height: '200px',
             display: 'flex',
             justifyContent: 'space-between',

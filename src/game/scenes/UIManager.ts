@@ -59,9 +59,9 @@ export class UIManager {
         this.boostBarFill = this.scene.add.graphics().setScrollFactor(0).setDepth(10);
 
         // Countdown timer
-        this.timerText = this.scene.add.text(this.width / 2, 20, '60', {
+        this.timerText = this.scene.add.text(this.width / 2, 20, '64', {
             fontFamily: 'BoldPixels',
-            fontSize: 62,
+            fontSize: 64,
             color: '#ffffff',
             stroke: '#000000',
             strokeThickness: 5,
@@ -71,7 +71,7 @@ export class UIManager {
         // Game over text (hidden initially)
         this.gameOverText = this.scene.add.text(this.width / 2, this.height / 2 - 60, '', {
             fontFamily: 'BoldPixels',
-            fontSize: 52,
+            fontSize: 90,
             color: '#ff3366',
             stroke: '#000000',
             strokeThickness: 6,
@@ -112,10 +112,10 @@ export class UIManager {
         this.timerText.setText(`${displaySec}`);
         if (timeRemaining <= 10) {
             this.timerText.setColor('#ff4444');
-            this.timerText.setFontSize(56);
+            this.timerText.setFontSize(72);
         } else {
             this.timerText.setColor('#ffffff');
-            this.timerText.setFontSize(48);
+            this.timerText.setFontSize(64);
         }
     }
 
@@ -271,7 +271,7 @@ export class UIManager {
                 fontSize: 22,
                 color: '#aaddff',
                 stroke: '#000000',
-                strokeThickness: 3,
+                strokeThickness: 4,
                 align: 'center',
             }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
             this.scene.tweens.add({ targets: badge, alpha: 1, duration: 400, delay: 400 });
@@ -308,10 +308,13 @@ export class UIManager {
         // Section header
         const header = this.scene.add.text(cx, topY, 'TOP 5 SCORES', {
             fontFamily: 'BoldPixels',
-            fontSize: 15,
-            color: '#888888',
+            fontSize: 18,
+            color: '#fafafa',
             align: 'center',
             letterSpacing: 4,
+            stroke: '#000000',
+            strokeThickness: 4,
+
         }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
         this.scene.tweens.add({ targets: header, alpha: 1, duration: 300, delay: 550 });
         this.resultElements.push(header);
@@ -352,7 +355,7 @@ export class UIManager {
                 rankLabels[i] ?? `${i + 1}th`,
                 {
                     fontFamily: 'BoldPixels',
-                    fontSize: 15,
+                    fontSize: 21,
                     color: rankColor,
                 }
             ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
@@ -373,8 +376,8 @@ export class UIManager {
             // Current-run star marker
             if (isThisRun) {
                 const star = this.scene.add.text(
-                    panelX + PAD_X + 46, rowY, '★',
-                    { fontFamily: 'BoldPixels', fontSize: 16, color: '#ffdd44' }
+                    panelX + PAD_X + 46, rowY, '*',
+                    { fontFamily: 'BoldPixels', fontSize: 21, color: '#ffdd44' }
                 ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
                 this.scene.tweens.add({ targets: star, alpha: 1, duration: 300, delay });
                 this.resultElements.push(star);
@@ -386,7 +389,7 @@ export class UIManager {
                 entry.playerName,
                 {
                     fontFamily: 'BoldPixels',
-                    fontSize: 16,
+                    fontSize: 18,
                     color: isThisRun ? '#ffcc66' : '#999999',
                 }
             ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
