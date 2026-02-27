@@ -3,6 +3,14 @@
  * Supports: single player, local battle, and online battle (PeerJS).
  */
 
+// ========== PHYSICS ENGINE TOGGLE ==========
+// Change to 'matter' to switch to Matter.js physics (requires page refresh).
+// 'arcade' — Phaser Arcade physics (default, stable, well-tested)
+// 'matter' — Matter.js physics (experimental; true rigid-body collisions,
+//             manual thrust/drag integration, same slip-angle feel)
+export const PHYSICS_ENGINE: 'arcade' | 'matter' = 'matter';
+
+
 export type GameMode = 'single' | 'battle' | 'online';
 
 /**

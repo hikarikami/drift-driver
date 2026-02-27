@@ -1,9 +1,9 @@
 import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
-import { CarController } from './CarController';
+import { ICarController } from './CarController';
 
 export interface DebugConfig {
-    car: CarController;
+    car: ICarController;
     soundManager: SoundManager;
     music: Phaser.Sound.BaseSound;
     musicVolume: number;
@@ -25,7 +25,7 @@ export class DebugModal {
     private maxSpdLabel!: Phaser.GameObjects.Text;
     debugText!: Phaser.GameObjects.Text;
 
-    private car!: CarController;
+    private car!: ICarController;
 
     constructor(scene: Scene, width: number, height: number) {
         this.scene = scene;

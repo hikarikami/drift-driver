@@ -10,7 +10,77 @@ export interface CarInput {
     isAccelerating: boolean;
 }
 
-export class CarController {
+/**
+ * Shared interface for both Arcade (CarController) and Matter (MatterCarController).
+ * Game.ts, ParticleEffects.ts and DebugModal.ts all use this type so they work
+ * with either physics back-end.
+ */
+export interface ICarController {
+    // Identity
+    playerId: number;
+    spritePrefix: string;
+    inputSource: InputSource;
+
+    // Game objects
+    headSprite: { x: number; y: number; setPosition(x: number, y: number): any; body: any };
+    carSprite: Phaser.GameObjects.Image;
+    carShadow: Phaser.GameObjects.Image;
+
+    // State
+    headAngle: number;
+    angularVel: number;
+    isAccelerating: boolean;
+    boostFuel: number;
+    boostIntensity: number;
+    boostBarDisplay: number;
+    tireMarkIntensity: number;
+    slipAngle: number;
+    gripLevel: number;
+
+    // Speed / velocity — abstracted so ParticleEffects/Game.ts don't touch body directly
+    readonly currentSpeed: number;
+    readonly velocityX: number;
+    readonly velocityY: number;
+
+    // Constants
+    readonly hitboxWidth: number;
+    readonly hitboxHeight: number;
+    readonly headRadius: number;
+    readonly totalCarFrames: number;
+    readonly boostMaxSpeed: number;
+    readonly boostMax: number;
+    readonly boostRefillAmount: number;
+    readonly rearWheelX: number;
+    readonly wheelSpreadY: number;
+    readonly collisionMass: number;
+    readonly battleBounce: number;
+    readonly obstacleBounce: number;
+    readonly minSpeed: number;
+
+    // Tunable (exposed to DebugModal)
+    forwardThrust: number;
+    drag: number;
+    maxSpeed: number;
+
+    // Methods
+    readInput(): CarInput;
+    setRemoteInput(input: CarInput): void;
+    applyInput(input: CarInput): void;
+    setupBody(mode: 'single' | 'battle'): void;
+    updateForward(dt: number, input: CarInput): void;
+    updateReverse(dt: number, input: CarInput): boolean;
+    updateGameOver(dt: number): void;
+    /** Called once when the game ends — sets the body to coast to a stop. */
+    initGameOver(): void;
+    updateCarSprite(): void;
+    reset(x: number, y: number): void;
+    handleCollision(obstacle: any): number;
+    handlePlayerCollision(otherCar: ICarController): number;
+    /** Enable/disable physics simulation (used to freeze guest cars in online mode). */
+    setPhysicsEnabled(enabled: boolean): void;
+}
+
+export class CarController implements ICarController {
     private scene: Scene;
 
     // Player identity
@@ -135,14 +205,18 @@ export class CarController {
 
     readonly minSpeed = 0;
 
-    // Backward compat: currentSpeed is now a read-through to body.speed
     get currentSpeed(): number {
         if (!this.headSprite?.body) return 0;
         return (this.headSprite.body as Phaser.Physics.Arcade.Body).speed;
     }
-    set currentSpeed(_v: number) {
-        // No-op — speed is owned by Arcade. Setter kept so Game.ts
-        // endGame tween doesn't crash.
+    set currentSpeed(_v: number) {}
+
+    get velocityX(): number {
+        return (this.headSprite?.body as Phaser.Physics.Arcade.Body)?.velocity?.x ?? 0;
+    }
+
+    get velocityY(): number {
+        return (this.headSprite?.body as Phaser.Physics.Arcade.Body)?.velocity?.y ?? 0;
     }
 
     constructor(scene: Scene, keys: KeyBindings = PLAYER1_KEYS, playerId: number = 1, spritePrefix: string = 'car-1', inputSource: InputSource = 'keyboard') {
@@ -564,6 +638,21 @@ export class CarController {
     }
 
     // ================================================================
+    //  GAME-OVER INIT (called once) + PHYSICS TOGGLE
+    // ================================================================
+
+    initGameOver() {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        body.setAcceleration(0, 0);
+        body.setDrag(400, 400);
+    }
+
+    setPhysicsEnabled(enabled: boolean) {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        body.enable = enabled;
+    }
+
+    // ================================================================
     //  COLLISION: car vs obstacle
     //  Arcade bounce handles the physics natively.
     //  We just add spin for game feel and return speed for sound.
@@ -587,7 +676,7 @@ export class CarController {
     //  (faster + more head-on) knocks the victim harder.
     // ================================================================
 
-    handlePlayerCollision(otherCar: CarController): number {
+    handlePlayerCollision(otherCar: ICarController): number {
         const myBody = this.headSprite.body as Phaser.Physics.Arcade.Body;
         const otherBody = otherCar.headSprite.body as Phaser.Physics.Arcade.Body;
 

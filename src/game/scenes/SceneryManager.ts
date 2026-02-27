@@ -1,4 +1,5 @@
 import { Scene } from 'phaser';
+import { PHYSICS_ENGINE } from './GameConfig';
 
 export interface ObstacleData {
     x: number;
@@ -42,8 +43,14 @@ export class SceneryManager {
     private decorationSprites: Phaser.GameObjects.Image[] = [];
     private decorationShadows: Phaser.GameObjects.Image[] = [];
 
-    // Rock colliders (bottom-only hitboxes)
+    // Rock colliders — Arcade static group
     obstacleHitboxes!: Phaser.Physics.Arcade.StaticGroup;
+
+    // Raw hitbox geometry — Game.ts reads this to create Matter static bodies when needed
+    obstacleHitboxData: { x: number; y: number; w: number; h: number }[] = [];
+
+    // Matter static body references (populated by Game.ts, cleared here)
+    matterObstacles: any[] = [];
 
     // Collider zones for spawn checks
     decorations: Phaser.GameObjects.Zone[] = [];
@@ -72,6 +79,16 @@ export class SceneryManager {
         if (this.obstacleHitboxes) {
             this.obstacleHitboxes.clear(true, true);
         }
+
+        if (this.matterObstacles.length > 0) {
+            const matterWorld = (this.scene as any).matter?.world;
+            for (const body of this.matterObstacles) {
+                matterWorld?.remove(body, true);
+            }
+            this.matterObstacles = [];
+        }
+
+        this.obstacleHitboxData = [];
 
         for (const zone of this.decorations) zone.destroy();
         this.decorations = [];
@@ -293,7 +310,7 @@ export class SceneryManager {
 
         const positions: { x: number, y: number }[] = [...existingPositions];
 
-        if (!this.obstacleHitboxes) {
+        if (!this.obstacleHitboxes && PHYSICS_ENGINE !== 'matter') {
             this.obstacleHitboxes = this.scene.physics.add.staticGroup();
         }
 
@@ -357,10 +374,13 @@ export class SceneryManager {
             const hitboxY =
                 pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
 
-            const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
-            this.scene.physics.add.existing(zone, true);
+            this.obstacleHitboxData.push({ x: pos.x, y: hitboxY, w: bodyW, h: bodyH });
 
-            this.obstacleHitboxes.add(zone);
+            const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
+            if (PHYSICS_ENGINE !== 'matter') {
+                this.scene.physics.add.existing(zone, true);
+                this.obstacleHitboxes.add(zone);
+            }
             this.decorations.push(zone);
             this.obstacleSprites.push(rock);
         }
@@ -387,7 +407,7 @@ export class SceneryManager {
 
         const positions: { x: number, y: number }[] = [];
 
-        if (!this.obstacleHitboxes) {
+        if (!this.obstacleHitboxes && PHYSICS_ENGINE !== 'matter') {
             this.obstacleHitboxes = this.scene.physics.add.staticGroup();
         }
 
@@ -436,10 +456,13 @@ export class SceneryManager {
             const hitboxY =
                 pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
 
-            const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
-            this.scene.physics.add.existing(zone, true);
+            this.obstacleHitboxData.push({ x: pos.x, y: hitboxY, w: bodyW, h: bodyH });
 
-            this.obstacleHitboxes.add(zone);
+            const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
+            if (PHYSICS_ENGINE !== 'matter') {
+                this.scene.physics.add.existing(zone, true);
+                this.obstacleHitboxes.add(zone);
+            }
             this.decorations.push(zone);
             this.obstacleSprites.push(rock);
         }

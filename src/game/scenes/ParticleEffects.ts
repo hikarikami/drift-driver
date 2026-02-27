@@ -1,5 +1,5 @@
 import { Scene } from 'phaser';
-import { CarController } from './CarController';
+import { ICarController } from './CarController';
 
 export class ParticleEffects {
     private scene: Scene;
@@ -96,16 +96,15 @@ export class ParticleEffects {
     /**
      * Per-frame update for all particle effects
      */
-    update(car: CarController, brakeInput: boolean) {
-        const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
+    update(car: ICarController, brakeInput: boolean) {
         const hx = car.headSprite.x;
         const hy = car.headSprite.y;
-        const speed = body.speed;
+        const speed = car.currentSpeed;
 
         // --- Tire marks ---
         if (car.tireMarkIntensity > 0) {
-            const vx = body.velocity.x;
-            const vy = body.velocity.y;
+            const vx = car.velocityX;
+            const vy = car.velocityY;
 
             const perpAngle = car.headAngle + Math.PI / 2;
             const spread = car.wheelSpreadY;

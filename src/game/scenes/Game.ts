@@ -1,7 +1,8 @@
 import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
 import { SceneryManager } from './SceneryManager';
-import { CarController } from './CarController';
+import { CarController, ICarController } from './CarController';
+import { MatterCarController } from './MatterCarController';
 import { ParticleEffects } from './ParticleEffects';
 import { PickupManager } from './PickupManager';
 import { UIManager } from './UIManager';
@@ -9,7 +10,7 @@ import { DebugModal } from './DebugModal';
 import { TouchControls } from '../TouchControls';
 import {
     GameSessionConfig, GameMode, PlayerConfig,
-    createSinglePlayerConfig,
+    createSinglePlayerConfig, PHYSICS_ENGINE,
 } from './GameConfig';
 import {
     getNetworkManager, destroyNetworkManager,
@@ -20,7 +21,7 @@ import {
 
 interface PlayerState {
     config: PlayerConfig;
-    car: CarController;
+    car: ICarController;
     particles: ParticleEffects;
     score: number;
     lastCollisionTime: number;
@@ -110,6 +111,12 @@ export class Game extends Scene {
             this.sceneryData = generatedScenery;
         }
 
+        // Matter mode: create static obstacle bodies from the hitbox data
+        // Done here (in the Scene) so this.matter is definitely available
+        if (PHYSICS_ENGINE === 'matter') {
+            this.buildMatterObstacles();
+        }
+
         // --- Canvas focus ---
         const canvas = this.sys.game.canvas;
         if (canvas && canvas.setAttribute) {
@@ -117,7 +124,9 @@ export class Game extends Scene {
             canvas.focus();
         }
 
-        this.physics.world.setBounds(0, 0, this.width, this.height);
+        if (PHYSICS_ENGINE !== 'matter') {
+            this.physics.world.setBounds(0, 0, this.width, this.height);
+        }
 
         // --- Create players ---
         for (const playerConfig of this.sessionConfig.players) {
@@ -166,21 +175,50 @@ export class Game extends Scene {
 
         // --- Collisions (host and local only — guest doesn't run physics) ---
         if (this.networkRole !== 'guest') {
-            for (const player of this.players) {
-                this.physics.add.collider(
-                    player.car.headSprite,
-                    this.scenery.obstacleHitboxes,
-                    (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
-                );
-            }
+            if (PHYSICS_ENGINE === 'matter') {
+                // Matter: listen to collision events
+                this.matter.world.on('collisionstart', (event: any) => {
+                    for (const pair of event.pairs) {
+                        const { bodyA, bodyB } = pair;
+                        for (const player of this.players) {
+                            const carLabel = `car_${player.config.id}`;
+                            if (bodyA.label === carLabel || bodyB.label === carLabel) {
+                                const other = bodyA.label === carLabel ? bodyB : bodyA;
+                                if (other.label === 'obstacle') {
+                                    this.handlePlayerCollision(player, null);
+                                }
+                            }
+                        }
+                        // PvP in battle/online
+                        if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
+                            const labelA = bodyA.label as string;
+                            const labelB = bodyB.label as string;
+                            if (
+                                (labelA === 'car_1' && labelB === 'car_2') ||
+                                (labelA === 'car_2' && labelB === 'car_1')
+                            ) {
+                                this.handlePlayerVsPlayerCollision();
+                            }
+                        }
+                    }
+                });
+            } else {
+                // Arcade: use colliders
+                for (const player of this.players) {
+                    this.physics.add.collider(
+                        player.car.headSprite as any,
+                        this.scenery.obstacleHitboxes,
+                        (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
+                    );
+                }
 
-            // Player-vs-player collision in battle/online mode
-            if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
-                this.physics.add.collider(
-                    this.players[0].car.headSprite,
-                    this.players[1].car.headSprite,
-                    () => this.handlePlayerVsPlayerCollision()
-                );
+                if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
+                    this.physics.add.collider(
+                        this.players[0].car.headSprite as any,
+                        this.players[1].car.headSprite as any,
+                        () => this.handlePlayerVsPlayerCollision()
+                    );
+                }
             }
         }
 
@@ -191,8 +229,7 @@ export class Game extends Scene {
             // Guest: disable physics on all car bodies — positions come from host
             if (this.networkRole === 'guest') {
                 for (const player of this.players) {
-                    const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
-                    body.enable = false;
+                    player.car.setPhysicsEnabled(false);
                 }
             }
         }
@@ -248,26 +285,63 @@ export class Game extends Scene {
         });
     }
 
+    // ========== MATTER OBSTACLE BUILDER ==========
+
+    private buildMatterObstacles() {
+        for (const hb of this.scenery.obstacleHitboxData) {
+            const body = this.matter.add.rectangle(hb.x, hb.y, hb.w, hb.h, {
+                isStatic: true,
+                label: 'obstacle',
+                friction: 0.3,
+                restitution: 0.35,
+                frictionAir: 0,
+            } as any);
+            this.scenery.matterObstacles.push(body);
+        }
+    }
+
     // ========== PLAYER FACTORY ==========
 
     private createPlayer(config: PlayerConfig): PlayerState {
         const spritePrefix = config.spritePrefix ?? 'car-1';
-        const car = new CarController(this, config.keys, config.id, spritePrefix, config.inputSource);
 
-        // Create car physics body (invisible rectangle hitbox)
-        car.headSprite = this.add.rectangle(0, 0, car.hitboxWidth, car.hitboxHeight, 0x00ff88, 0) as unknown as Phaser.GameObjects.Arc;
-        this.physics.add.existing(car.headSprite);
+        let car: ICarController;
 
-        // Set the physics body to match the rectangle size
-        const body = car.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setSize(car.hitboxWidth, car.hitboxHeight);
+        if (PHYSICS_ENGINE === 'matter') {
+            // ---- Matter physics car ----
+            const mCar = new MatterCarController(this, config.keys, config.id, spritePrefix, config.inputSource);
+
+            const rect = this.add.rectangle(0, 0, mCar.hitboxWidth, mCar.hitboxHeight, 0x00ff88, 0);
+            this.matter.add.gameObject(rect, {
+                frictionAir: 0,
+                friction: 0,
+                frictionStatic: 0,
+                restitution: mCar.obstacleBounce,
+                inertia: Infinity,
+                inverseInertia: 0,
+                label: `car_${config.id}`,
+                mass: mCar.collisionMass,
+            } as any);
+            mCar.headSprite = rect as any;
+            car = mCar;
+        } else {
+            // ---- Arcade physics car ----
+            const aCar = new CarController(this, config.keys, config.id, spritePrefix, config.inputSource);
+
+            aCar.headSprite = this.add.rectangle(0, 0, aCar.hitboxWidth, aCar.hitboxHeight, 0x00ff88, 0) as unknown as Phaser.GameObjects.Arc;
+            this.physics.add.existing(aCar.headSprite);
+
+            const body = aCar.headSprite.body as Phaser.Physics.Arcade.Body;
+            body.setSize(aCar.hitboxWidth, aCar.hitboxHeight);
+            car = aCar;
+        }
 
         // Create car visuals using player's sprite set
         const initialFrame = `${spritePrefix}_000`;
         car.carShadow = this.scenery.createDynamicShadow(0, 0, initialFrame, 3);
         car.carSprite = this.add.image(0, 0, initialFrame).setDepth(4);
 
-        // Let CarController configure all physics (drag, bounce, mass, etc.)
+        // Configure body properties (mode-specific bounce/mass)
         // Online mode uses same physics as battle
         car.setupBody(this.mode === 'single' ? 'single' : 'battle');
 
@@ -375,9 +449,11 @@ export class Game extends Scene {
             this.net.on('scenery', (packet: any) => {
                 if (packet.sceneryData && !this.sceneryRebuilt) {
                     this.sceneryRebuilt = true;
-                    // Clear existing scenery and rebuild with host's data
                     this.scenery.clearAll();
                     this.scenery.buildIsometricBackground(packet.sceneryData);
+                    if (PHYSICS_ENGINE === 'matter') {
+                        this.buildMatterObstacles();
+                    }
                 }
             });
 
@@ -393,20 +469,17 @@ export class Game extends Scene {
     private sendStateToGuest() {
         if (!this.net || this.networkRole !== 'host') return;
 
-        const carStates: CarState[] = this.players.map(p => {
-            const body = p.car.headSprite.body as Phaser.Physics.Arcade.Body;
-            return {
-                x: p.car.headSprite.x,
-                y: p.car.headSprite.y,
-                vx: body.velocity.x,
-                vy: body.velocity.y,
-                angle: p.car.headAngle,
-                angularVel: p.car.angularVel,
-                boostFuel: p.car.boostFuel,
-                boostIntensity: p.car.boostIntensity,
-                tireMarkIntensity: p.car.tireMarkIntensity,
-            };
-        });
+        const carStates: CarState[] = this.players.map(p => ({
+            x: p.car.headSprite.x,
+            y: p.car.headSprite.y,
+            vx: p.car.velocityX,
+            vy: p.car.velocityY,
+            angle: p.car.headAngle,
+            angularVel: p.car.angularVel,
+            boostFuel: p.car.boostFuel,
+            boostIntensity: p.car.boostIntensity,
+            tireMarkIntensity: p.car.tireMarkIntensity,
+        }));
 
         const packet: StatePacket = {
             type: 'state',
@@ -657,8 +730,7 @@ export class Game extends Scene {
         }
 
         // --- Debug ---
-        const speed = (this.players[0].car.headSprite.body as Phaser.Physics.Arcade.Body).speed;
-        this.debug.updateDebugText(speed);
+        this.debug.updateDebugText(this.players[0].car.currentSpeed);
 
         // --- Network: host sends state to guest ---
         if (this.networkRole === 'host') {
@@ -738,9 +810,7 @@ export class Game extends Scene {
         this.ui.fadeDimOverlay();
 
         for (const player of this.players) {
-            const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
-            body.setAcceleration(0, 0);
-            body.setDrag(400, 400);  // High drag to coast to stop
+            player.car.initGameOver();
             player.particles.stopAll();
         }
 

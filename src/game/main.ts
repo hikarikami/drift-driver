@@ -5,6 +5,7 @@ import { MainMenu } from './scenes/MainMenu';
 import { OnlineLobby } from './scenes/OnlineLobby';
 import { AUTO, Game } from 'phaser';
 import { Preloader } from './scenes/Preloader';
+import { PHYSICS_ENGINE } from './scenes/GameConfig';
 
 //  Find out more information about the Game Config at:
 //  https://docs.phaser.io/api-documentation/typedef/types-core#gameconfig
@@ -24,9 +25,15 @@ const config: Phaser.Types.Core.GameConfig = {
         createContainer: true,
     },
     physics: {
-        default: 'arcade',
+        default: PHYSICS_ENGINE,
         arcade: {
             debug: false,
+        },
+        matter: {
+            debug: false,
+            gravity: { x: 0, y: 0 },
+            setBounds: false,
+            autoUpdate: true,
         },
     },
     scene: [
