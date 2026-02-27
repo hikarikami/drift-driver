@@ -32,6 +32,8 @@ export class Preloader extends Scene
         //  Load the assets for the game
         this.load.setPath('assets');
 
+        this.load.font('BoldPixels', 'BoldPixels.ttf', 'truetype');
+
 
         this.load.image('logo', 'logo.png');
         this.load.image('crate', 'score/crate.png');
