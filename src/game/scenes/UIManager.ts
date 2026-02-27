@@ -18,6 +18,7 @@ export class UIManager {
     gameOverText!: Phaser.GameObjects.Text;
     boostBarBg!: Phaser.GameObjects.Graphics;
     boostBarFill!: Phaser.GameObjects.Graphics;
+    private boostBarGlow!: Phaser.GameObjects.Graphics;
 
     private finalScoreText?: Phaser.GameObjects.Text;
     private playAgainBtn?: Phaser.GameObjects.Text;
@@ -36,9 +37,9 @@ export class UIManager {
      */
     create() {
         // P1 Score (top-left)
-        this.scoreText = this.scene.add.text(16, 16, 'Score: 0', {
+        this.scoreText = this.scene.add.text(16, 14, 'Score: 0', {
             fontFamily: 'BoldPixels',
-            fontSize: 24,
+            fontSize: 30,
             color: '#ffffff',
             stroke: '#000000',
             strokeThickness: 4,
@@ -46,22 +47,34 @@ export class UIManager {
 
         // Boost gauge bar
         const barX = 16;
-        const barY = 48;
-        const barW = 120;
-        const barH = 10;
+        const barY = 54;
+        const barW = 160;
+        const barH = 18;
+
+        // Glow layer (behind the bar, depth 9 so it sits under the bg border)
+        this.boostBarGlow = this.scene.add.graphics().setScrollFactor(0).setDepth(9);
 
         this.boostBarBg = this.scene.add.graphics().setScrollFactor(0).setDepth(10);
-        this.boostBarBg.fillStyle(0x000000, 0.5);
-        this.boostBarBg.fillRoundedRect(barX, barY, barW, barH, 3);
-        this.boostBarBg.lineStyle(1, 0xffffff, 0.4);
-        this.boostBarBg.strokeRoundedRect(barX, barY, barW, barH, 3);
+        this.boostBarBg.fillStyle(0x000000, 0.55);
+        this.boostBarBg.fillRoundedRect(barX, barY, barW, barH, 5);
+        this.boostBarBg.lineStyle(1, 0xffffff, 0.25);
+        this.boostBarBg.strokeRoundedRect(barX, barY, barW, barH, 5);
 
         this.boostBarFill = this.scene.add.graphics().setScrollFactor(0).setDepth(10);
+
+        // "⚡ NITRO" label overlaid on top of the bar
+        this.scene.add.text(barX + 8, barY + barH / 2, '⚡ NITRO', {
+            fontFamily: 'BoldPixels',
+            fontSize: 11,
+            color: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 2,
+        }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11);
 
         // Countdown timer
         this.timerText = this.scene.add.text(this.width / 2, 20, '64', {
             fontFamily: 'BoldPixels',
-            fontSize: 64,
+            fontSize: 72,
             color: '#ffffff',
             stroke: '#000000',
             strokeThickness: 5,
@@ -112,10 +125,10 @@ export class UIManager {
         this.timerText.setText(`${displaySec}`);
         if (timeRemaining <= 10) {
             this.timerText.setColor('#ff4444');
-            this.timerText.setFontSize(72);
+            this.timerText.setFontSize(82);
         } else {
             this.timerText.setColor('#ffffff');
-            this.timerText.setFontSize(64);
+            this.timerText.setFontSize(72);
         }
     }
 
@@ -124,21 +137,40 @@ export class UIManager {
      */
     updateBoostBar(boostBarDisplay: number, boostMax: number) {
         const barX = 16;
-        const barY = 48;
-        const barW = 120;
-        const barH = 10;
+        const barY = 54;
+        const barW = 160;
+        const barH = 18;
 
-        const fillW = barW * Math.max(0, boostBarDisplay / boostMax);
+        const fuelRatio = Math.max(0, boostBarDisplay / boostMax);
+        const fillW = barW * fuelRatio;
 
-        this.boostBarFill.clear();
-        const fuelRatio = boostBarDisplay / boostMax;
+        // Fill colour: blue when full, orange-red when low
         const r = Math.round(255 * (1 - fuelRatio));
         const g = Math.round(136 + 68 * fuelRatio);
         const b = Math.round(255 * fuelRatio);
         const fillColor = (r << 16) | (g << 8) | b;
-        this.boostBarFill.fillStyle(fillColor, 0.9);
+
+        // Outer glow — fades in above 35% charge
+        this.boostBarGlow.clear();
+        if (fuelRatio > 0.35) {
+            const glowAlpha = ((fuelRatio - 0.35) / 0.65) * 0.28;
+            this.boostBarGlow.fillStyle(fillColor, glowAlpha);
+            this.boostBarGlow.fillRoundedRect(barX - 5, barY - 5, barW + 10, barH + 10, 9);
+        }
+
+        // Main fill
+        this.boostBarFill.clear();
         if (fillW > 1) {
-            this.boostBarFill.fillRoundedRect(barX, barY, fillW, barH, 3);
+            this.boostBarFill.fillStyle(fillColor, 0.92);
+            this.boostBarFill.fillRoundedRect(barX, barY, fillW, barH, 5);
+
+            // Top-edge shine stripe
+            this.boostBarFill.fillStyle(0xffffff, 0.22);
+            this.boostBarFill.fillRoundedRect(
+                barX + 2, barY + 2,
+                Math.max(0, fillW - 4), 4,
+                { tl: 3, tr: 3, bl: 0, br: 0 },
+            );
         }
     }
 

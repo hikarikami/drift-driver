@@ -25,10 +25,18 @@ const config: Phaser.Types.Core.GameConfig = {
         createContainer: true,
     },
     physics: {
+        // Toggle is set in GameConfig.ts — only the active engine's plugin is
+        // loaded by Phaser, so scene.physics (Arcade) or scene.matter (Matter)
+        // will be undefined if the respective engine is not selected.
         default: PHYSICS_ENGINE,
+
+        // [Arcade only] — scene.physics, Phaser.Physics.Arcade.*
         arcade: {
             debug: false,
         },
+
+        // [Matter only] — scene.matter, Phaser.Physics.Matter.*
+        // gravity disabled; we apply thrust/drag manually each frame
         matter: {
             debug: false,
             gravity: { x: 0, y: 0 },

@@ -80,6 +80,11 @@ export interface ICarController {
     setPhysicsEnabled(enabled: boolean): void;
 }
 
+/**
+ * [Arcade only] Car controller using Phaser Arcade physics.
+ * Velocity, collision, and world bounds are all handled by scene.physics (ArcadePlugin).
+ * For the Matter.js equivalent see MatterCarController.ts.
+ */
 export class CarController implements ICarController {
     private scene: Scene;
 

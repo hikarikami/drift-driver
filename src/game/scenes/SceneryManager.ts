@@ -43,13 +43,14 @@ export class SceneryManager {
     private decorationSprites: Phaser.GameObjects.Image[] = [];
     private decorationShadows: Phaser.GameObjects.Image[] = [];
 
-    // Rock colliders — Arcade static group
+    // [Arcade only] Static group of Zone hitboxes registered with scene.physics
     obstacleHitboxes!: Phaser.Physics.Arcade.StaticGroup;
 
-    // Raw hitbox geometry — Game.ts reads this to create Matter static bodies when needed
+    // [Both] Raw hitbox geometry: Arcade uses it for Zone placement,
+    //        Matter uses it in Game.buildMatterObstacles() to create static bodies
     obstacleHitboxData: { x: number; y: number; w: number; h: number }[] = [];
 
-    // Matter static body references (populated by Game.ts, cleared here)
+    // [Matter only] References to static Matter bodies; cleared in clearAll()
     matterObstacles: any[] = [];
 
     // Collider zones for spawn checks
@@ -76,10 +77,12 @@ export class SceneryManager {
         this.decorationSprites = [];
         this.decorationShadows = [];
 
+        // [Arcade only] destroy Arcade static hitbox zones
         if (this.obstacleHitboxes) {
             this.obstacleHitboxes.clear(true, true);
         }
 
+        // [Matter only] remove static Matter bodies from the physics world
         if (this.matterObstacles.length > 0) {
             const matterWorld = (this.scene as any).matter?.world;
             for (const body of this.matterObstacles) {
@@ -310,6 +313,7 @@ export class SceneryManager {
 
         const positions: { x: number, y: number }[] = [...existingPositions];
 
+        // [Arcade only] create the static group once; skipped in Matter mode
         if (!this.obstacleHitboxes && PHYSICS_ENGINE !== 'matter') {
             this.obstacleHitboxes = this.scene.physics.add.staticGroup();
         }
@@ -374,9 +378,13 @@ export class SceneryManager {
             const hitboxY =
                 pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
 
+            // [Both] store geometry so Arcade Zones and Matter rectangles can be sized identically
             this.obstacleHitboxData.push({ x: pos.x, y: hitboxY, w: bodyW, h: bodyH });
 
+            // Zone is created for both engines: Arcade attaches physics to it,
+            // Matter uses the zone only for position-tracking in findSafePosition()
             const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
+            // [Arcade only] attach static Arcade body and register with the static group
             if (PHYSICS_ENGINE !== 'matter') {
                 this.scene.physics.add.existing(zone, true);
                 this.obstacleHitboxes.add(zone);
@@ -407,6 +415,7 @@ export class SceneryManager {
 
         const positions: { x: number, y: number }[] = [];
 
+        // [Arcade only] create the static group once; skipped in Matter mode
         if (!this.obstacleHitboxes && PHYSICS_ENGINE !== 'matter') {
             this.obstacleHitboxes = this.scene.physics.add.staticGroup();
         }
@@ -456,9 +465,12 @@ export class SceneryManager {
             const hitboxY =
                 pos.y + (displayH / 2) - (bodyH / 2) + (yAdjust * config.scale);
 
+            // [Both] store geometry so Arcade Zones and Matter rectangles can be sized identically
             this.obstacleHitboxData.push({ x: pos.x, y: hitboxY, w: bodyW, h: bodyH });
 
+            // Zone created for both: Arcade attaches physics, Matter uses it only for position-tracking
             const zone = this.scene.add.zone(pos.x, hitboxY, bodyW, bodyH);
+            // [Arcade only] attach static Arcade body and register with the static group
             if (PHYSICS_ENGINE !== 'matter') {
                 this.scene.physics.add.existing(zone, true);
                 this.obstacleHitboxes.add(zone);

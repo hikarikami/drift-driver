@@ -46,6 +46,7 @@ export class MatterCarController implements ICarController {
     boostIntensity = 0;
     boostBarDisplay: number;
     tireMarkIntensity = 0;
+    private brakeIntensity = 0;  // 0→1 ramp so handbrake effects ease in smoothly
 
     // Slip-angle physics state
     slipAngle = 0;
@@ -60,9 +61,9 @@ export class MatterCarController implements ICarController {
     private _speed = 0;
 
     // === TUNING ===
-    forwardThrust = 355;
-    drag = 45;
-    maxSpeed = 373;
+    forwardThrust = 315;
+    drag = 50;
+    maxSpeed = 380;
 
     // Hitbox
     readonly hitboxWidth = 42;
@@ -80,36 +81,38 @@ export class MatterCarController implements ICarController {
     private readonly boostRampDown = 3.5;
 
     // Braking
-    private readonly brakeDragMultiplier = 4.5;
-    private readonly brakeSteerBoost = 1.4;
+    private readonly brakeDragMultiplier = 6.2;   // strong decel — car slows quickly for pivot turns
+    private readonly brakeSteerBoost = 5.2;        // strong rotation kick for "turn on a point" feel
+    private readonly brakeRampUp   = 8.0;          // ~0.12 s to reach full brake effect
+    private readonly brakeRampDown = 14.0;         // releases quickly when key is lifted
 
     // Reverse
     private readonly reverseThrust = 120;
     private readonly maxReverseSpeed = 105;
 
     // Steering
-    private readonly targetAngularVel = 3.3; // default 3.6
+    private readonly targetAngularVel = 3.5;
     private readonly minSteerFraction = 0.11;
     private readonly steerSmoothing = 18;
     private readonly returnSmoothing = 22;
 
     // Grip — slip-angle based lateral friction
     private readonly gripSlipLow = 0.18;      // holds full grip longer (grippier onset)
-    private readonly gripSlipHigh = 0.44;     // narrow transition = snappy break into slide - default 0.44
-    private readonly gripMin = 0.14;          // much lower floor = real sideways slide - default 0.14
-    private readonly lateralFriction = 35.0;   // slower lateral damping = car slides more - default 6
-    private readonly driftSpeedLoss = 0.22;   // less speed penalty = longer fun slides - default 0.22
+    private readonly gripSlipHigh = 0.44;     // narrow transition = snappy break into slide
+    private readonly gripMin = 0.18;          // slightly higher floor = less extreme slides
+    private readonly lateralFriction = 8.5;   // more planted feel
+    private readonly driftSpeedLoss = 0.28;   // more speed loss during slides = less float
 
     // Grip recovery
     private readonly gripRecoveryTime = 3.0;              // snappier recovery after straightening
     private readonly gripRecoverySlipThreshold = 0.16;
 
-    // Drift safety limit
-    private readonly maxDriftAngle = 0.25;    // bigger drift angle allowed
-    private readonly driftPushback = 2.5;     // less artificial correction
+    // Drift safety limit — generous angle, gentle correction to avoid snaking
+    private readonly maxDriftAngle = 0.32;
+    private readonly driftPushback = 0.8;
 
-    // Handbrake
-    private readonly brakeGripMultiplier = 0.11;
+    // Handbrake — very low grip so the rear slides freely, enabling pivot turns
+    private readonly brakeGripMultiplier = 0.10;
 
     // Counter-steer
     private readonly counterSteerGripBonus = 1.55;  // more reward for catching the slide
@@ -119,16 +122,16 @@ export class MatterCarController implements ICarController {
     private readonly throttleGripPenalty = 0.68;  // stronger power-on oversteer
 
     // Speed-sensitive grip falloff
-    private readonly speedGripFalloff = 0.28;  // more slide tendency at high speed
+    private readonly speedGripFalloff = 0.20;
 
     // Engine braking
     private readonly coastDragMultiplier = 2.4;  // rally-style lift-off decel
 
     // Angular damping
-    private readonly angularDrag = 3.5;  // more responsive heading changes
+    private readonly angularDrag = 3.0;
 
     // Tire mark chain-breaking
-    private readonly driftSignChangeCooldown = 0.20;
+    private readonly driftSignChangeCooldown = 0.8;
 
     // Tile marks
     readonly rearWheelX = -4;
@@ -326,6 +329,14 @@ export class MatterCarController implements ICarController {
         this.syncFromBody();
         const speed = this._speed;
 
+        // ---- BRAKE INTENSITY RAMP ----
+        // Smoothly ramp 0→1 when brake is held so all effects ease in
+        if (input.brakeInput) {
+            this.brakeIntensity = Math.min(1, this.brakeIntensity + this.brakeRampUp * dt);
+        } else {
+            this.brakeIntensity = Math.max(0, this.brakeIntensity - this.brakeRampDown * dt);
+        }
+
         // ---- STEERING ----
         const speedRatio  = Math.min(speed / this.maxSpeed, 1);
         const steerScale  = this.minSteerFraction + (1 - this.minSteerFraction) * speedRatio;
@@ -334,8 +345,9 @@ export class MatterCarController implements ICarController {
         const lerpFactor  = 1 - Math.exp(-smoothRate * dt);
         this.angularVel  += (targetAV - this.angularVel) * lerpFactor;
 
-        if (input.brakeInput && input.turnInput !== 0 && speed > 40) {
-            this.angularVel += input.turnInput * this.brakeSteerBoost * dt;
+        // Brake-steer rotation kick — scaled by brakeIntensity so it eases in
+        if (input.brakeInput && input.turnInput !== 0 && speed > 25) {
+            this.angularVel += input.turnInput * this.brakeSteerBoost * this.brakeIntensity * dt;
         }
 
         this.headAngle  += this.angularVel * dt;
@@ -395,7 +407,9 @@ export class MatterCarController implements ICarController {
             effectiveGrip *= 1.0 - this.speedGripFalloff * speedRatio;
 
             if (input.brakeInput) {
-                effectiveGrip *= this.brakeGripMultiplier;
+                // Lerp grip from 1.0 → brakeGripMultiplier as brakeIntensity rises
+                const brakeMult = 1.0 - (1.0 - this.brakeGripMultiplier) * this.brakeIntensity;
+                effectiveGrip *= brakeMult;
             }
 
             this.gripLevel = effectiveGrip;
@@ -413,7 +427,8 @@ export class MatterCarController implements ICarController {
             }
 
             // ---- DRIFT SAFETY LIMIT ----
-            if (Math.abs(driftAngle) > this.maxDriftAngle) {
+            // Skipped during handbrake — pushback fighting brakeSteerBoost causes snaking
+            if (!input.brakeInput && Math.abs(driftAngle) > this.maxDriftAngle) {
                 const excess   = Math.abs(driftAngle) - this.maxDriftAngle;
                 const pushback = excess * this.driftPushback * dt;
                 this.angularVel += driftAngle > 0 ? -pushback : pushback;
@@ -434,9 +449,9 @@ export class MatterCarController implements ICarController {
 
             // ---- THRUST / DRAG (manually integrated for Matter) ----
             if (input.brakeInput) {
-                const brakeDrag = this.drag * this.brakeDragMultiplier;
-                // Tiny forward push while handbraking to maintain momentum
-                forwardSpeed += thrust * 0.15 * dt;
+                // Drag also ramps up with brakeIntensity for a smooth bite
+                const effectiveDragMult = 1.0 + (this.brakeDragMultiplier - 1.0) * this.brakeIntensity;
+                const brakeDrag = this.drag * effectiveDragMult;
                 forwardSpeed  = forwardSpeed > 0
                     ? Math.max(0, forwardSpeed - brakeDrag * dt)
                     : Math.min(0, forwardSpeed + brakeDrag * dt);
@@ -576,6 +591,7 @@ export class MatterCarController implements ICarController {
         this.boostBarDisplay = this.boostMax;
         this.tireMarkIntensity = 0;
         this.isAccelerating  = false;
+        this.brakeIntensity  = 0;
         this.slipAngle       = 0;
         this.gripLevel       = 1.0;
         this.gripRecoveryTimer = 1.0;

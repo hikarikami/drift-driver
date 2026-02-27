@@ -7,6 +7,7 @@ import { ParticleEffects } from './ParticleEffects';
 import { PickupManager } from './PickupManager';
 import { UIManager } from './UIManager';
 import { DebugModal } from './DebugModal';
+import { PickupArrow } from './PickupArrow';
 import { TouchControls } from '../TouchControls';
 import {
     GameSessionConfig, GameMode, PlayerConfig,
@@ -47,6 +48,7 @@ export class Game extends Scene {
     private pickup!: PickupManager;
     private ui!: UIManager;
     private debug!: DebugModal;
+    private arrows: PickupArrow[] = [];
 
     // Shared state
     private gameOver = false;
@@ -111,8 +113,8 @@ export class Game extends Scene {
             this.sceneryData = generatedScenery;
         }
 
-        // Matter mode: create static obstacle bodies from the hitbox data
-        // Done here (in the Scene) so this.matter is definitely available
+        // [Matter only] build static obstacle bodies from SceneryManager's hitbox geometry.
+        // Must be called here (inside the Scene) so this.matter is available.
         if (PHYSICS_ENGINE === 'matter') {
             this.buildMatterObstacles();
         }
@@ -124,6 +126,8 @@ export class Game extends Scene {
             canvas.focus();
         }
 
+        // [Arcade only] constrain bodies to the world rectangle.
+        // Matter uses manual wrapping in each car controller instead.
         if (PHYSICS_ENGINE !== 'matter') {
             this.physics.world.setBounds(0, 0, this.width, this.height);
         }
@@ -137,6 +141,9 @@ export class Game extends Scene {
         // --- Pickup (shared) ---
         this.pickup = new PickupManager(this, this.scenery, this.width, this.height);
         this.pickup.create();
+
+        // --- Pickup arrows (one per player, shown after first spawn) ---
+        this.arrows = this.players.map(() => new PickupArrow(this));
 
         // --- UI ---
         this.ui = new UIManager(this, this.width, this.height);
@@ -175,6 +182,8 @@ export class Game extends Scene {
 
         // --- Collisions (host and local only — guest doesn't run physics) ---
         if (this.networkRole !== 'guest') {
+            // [Matter only] collision detection via event listener; bodies are
+            // identified by their label strings set during createPlayer()
             if (PHYSICS_ENGINE === 'matter') {
                 // Matter: listen to collision events
                 this.matter.world.on('collisionstart', (event: any) => {
@@ -203,7 +212,8 @@ export class Game extends Scene {
                     }
                 });
             } else {
-                // Arcade: use colliders
+                // [Arcade only] collision detection via Arcade colliders registered
+                // against the static Zone group built in SceneryManager
                 for (const player of this.players) {
                     this.physics.add.collider(
                         player.car.headSprite as any,
@@ -286,6 +296,9 @@ export class Game extends Scene {
     }
 
     // ========== MATTER OBSTACLE BUILDER ==========
+    // [Matter only] reads SceneryManager.obstacleHitboxData and registers
+    // each hitbox as a static Matter body labelled 'obstacle'.
+    // Called after buildIsometricBackground() so geometry is ready.
 
     private buildMatterObstacles() {
         for (const hb of this.scenery.obstacleHitboxData) {
@@ -307,6 +320,8 @@ export class Game extends Scene {
 
         let car: ICarController;
 
+        // [Matter only] create a Rectangle game object, wrap it with a Matter body,
+        // and hand it to MatterCarController as its headSprite
         if (PHYSICS_ENGINE === 'matter') {
             // ---- Matter physics car ----
             const mCar = new MatterCarController(this, config.keys, config.id, spritePrefix, config.inputSource);
@@ -325,6 +340,7 @@ export class Game extends Scene {
             mCar.headSprite = rect as any;
             car = mCar;
         } else {
+            // [Arcade only] create a Rectangle game object and attach an Arcade physics body to it
             // ---- Arcade physics car ----
             const aCar = new CarController(this, config.keys, config.id, spritePrefix, config.inputSource);
 
@@ -447,10 +463,11 @@ export class Game extends Scene {
 
             // Guest receives scenery data — rebuild scenery with host's layout
             this.net.on('scenery', (packet: any) => {
-                if (packet.sceneryData && !this.sceneryRebuilt) {
+                    if (packet.sceneryData && !this.sceneryRebuilt) {
                     this.sceneryRebuilt = true;
                     this.scenery.clearAll();
                     this.scenery.buildIsometricBackground(packet.sceneryData);
+                    // [Matter only] re-register static obstacle bodies after scenery rebuild
                     if (PHYSICS_ENGINE === 'matter') {
                         this.buildMatterObstacles();
                     }
@@ -699,10 +716,21 @@ export class Game extends Scene {
             this.sendInputToHost();
 
             // Update sprites and particles from interpolated positions
-            for (const player of this.players) {
+            for (let i = 0; i < this.players.length; i++) {
+                const player = this.players[i];
                 player.car.updateCarSprite();
                 const input = player.car.readInput();
                 player.particles.update(player.car, input.brakeInput);
+
+                const pickupReady = this.pickup.pickupX != null && !isNaN(this.pickup.pickupX);
+                if (this.arrows[i] && pickupReady) {
+                    this.arrows[i].update(
+                        player.car.headSprite.x, player.car.headSprite.y,
+                        player.car.headAngle,
+                        this.pickup.pickupX, this.pickup.pickupY,
+                        true,
+                    );
+                }
             }
             this.ui.updateTimer(this.timeRemaining);
             this.ui.updateScore(this.players[0].score, this.players[1]?.score);
@@ -788,6 +816,13 @@ export class Game extends Scene {
             this.collectSound.play({ volume: .9 });
         }
 
+        // --- Pickup arrow indicator ---
+        const idx = this.players.indexOf(player);
+        const pickupReady = this.pickup.pickupX != null && !isNaN(this.pickup.pickupX);
+        if (this.arrows[idx] && pickupReady) {
+            this.arrows[idx].update(hx, hy, car.headAngle, this.pickup.pickupX, this.pickup.pickupY, true);
+        }
+
         // --- Boost bar (smoothed) — only show for player 1 for now ---
         if (player.config.id === 1) {
             const barLerp = 1 - Math.exp(-6 * dt);
@@ -828,6 +863,10 @@ export class Game extends Scene {
         for (const player of this.players) {
             player.car.initGameOver();
             player.particles.stopAll();
+        }
+
+        for (const arrow of this.arrows) {
+            arrow.hide();
         }
 
         // Fade music
