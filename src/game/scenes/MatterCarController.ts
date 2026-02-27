@@ -88,17 +88,17 @@ export class MatterCarController implements ICarController {
     private readonly maxReverseSpeed = 105;
 
     // Steering
-    private readonly targetAngularVel = 4.5;
-    private readonly minSteerFraction = 0.12;
+    private readonly targetAngularVel = 3.3; // default 3.6
+    private readonly minSteerFraction = 0.11;
     private readonly steerSmoothing = 18;
     private readonly returnSmoothing = 22;
 
     // Grip — slip-angle based lateral friction
     private readonly gripSlipLow = 0.18;      // holds full grip longer (grippier onset)
-    private readonly gripSlipHigh = 0.44;     // narrow transition = snappy break into slide
-    private readonly gripMin = 0.14;          // much lower floor = real sideways slide
-    private readonly lateralFriction = 6.0;   // slower lateral damping = car slides more
-    private readonly driftSpeedLoss = 0.22;   // less speed penalty = longer fun slides
+    private readonly gripSlipHigh = 0.44;     // narrow transition = snappy break into slide - default 0.44
+    private readonly gripMin = 0.14;          // much lower floor = real sideways slide - default 0.14
+    private readonly lateralFriction = 35.0;   // slower lateral damping = car slides more - default 6
+    private readonly driftSpeedLoss = 0.22;   // less speed penalty = longer fun slides - default 0.22
 
     // Grip recovery
     private readonly gripRecoveryTime = 3.0;              // snappier recovery after straightening

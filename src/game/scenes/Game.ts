@@ -519,16 +519,32 @@ export class Game extends Scene {
     private interpTargets: CarState[] = [];
     private interpPrevious: CarState[] = [];
     private interpProgress = 0;
+    // Interpolation window: longer than one frame so motion is smooth between packets.
+    // Independent of send rate — if packets arrive faster they simply start a new
+    // interpolation from the current visual position rather than completing fully.
+    private readonly networkInterpDuration = 1 / 30; // 33 ms ≈ 2 frames at 60 fps
 
     /** Guest: apply received state from host to all game objects */
     private applyReceivedState() {
         if (!this.lastReceivedState) return;
         const state = this.lastReceivedState;
 
-        // Store previous targets as starting point for interpolation
-        this.interpPrevious = this.interpTargets.length > 0
-            ? [...this.interpTargets]
-            : state.cars.map((cs: CarState) => ({ ...cs }));
+        // Store the CURRENT interpolated position (not the old target) as the new
+        // starting point. This prevents the car from snapping back when a new packet
+        // arrives before the previous interpolation has fully completed.
+        if (this.interpTargets.length > 0 && this.interpPrevious.length > 0) {
+            const t = this.interpProgress;
+            this.interpPrevious = this.interpTargets.map((target, i) => {
+                const prev = this.interpPrevious[i];
+                if (!prev) return { ...target };
+                let angleDiff = target.angle - prev.angle;
+                while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+                return { ...prev, x: prev.x + (target.x - prev.x) * t, y: prev.y + (target.y - prev.y) * t, angle: prev.angle + angleDiff * t };
+            });
+        } else {
+            this.interpPrevious = state.cars.map((cs: CarState) => ({ ...cs }));
+        }
 
         // New targets from host
         this.interpTargets = state.cars.map((cs: CarState) => ({ ...cs }));
@@ -571,8 +587,8 @@ export class Game extends Scene {
     private interpolateGuestCars(dt: number) {
         if (this.interpTargets.length === 0) return;
 
-        // Advance interpolation (complete in ~1 send interval)
-        this.interpProgress = Math.min(1, this.interpProgress + dt / this.networkSendRate);
+        // Advance interpolation over the full interp window (not just one frame)
+        this.interpProgress = Math.min(1, this.interpProgress + dt / this.networkInterpDuration);
         const t = this.interpProgress;
 
         for (let i = 0; i < this.interpTargets.length && i < this.players.length; i++) {
