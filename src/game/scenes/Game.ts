@@ -6,6 +6,7 @@ import { ParticleEffects } from './ParticleEffects';
 import { PickupManager } from './PickupManager';
 import { UIManager } from './UIManager';
 import { DebugModal } from './DebugModal';
+import { TouchControls } from '../TouchControls';
 import {
     GameSessionConfig, GameMode, PlayerConfig,
     createSinglePlayerConfig,
@@ -201,6 +202,13 @@ export class Game extends Scene {
 
         // "Go!" popup near the player's car at game start
         this.showGoPopup();
+
+        // Virtual touch controls (layered on top of the canvas)
+        TouchControls.getInstance().show();
+
+        // Clean up the overlay whenever this scene stops
+        this.events.once('shutdown', () => TouchControls.getInstance().hide());
+        this.events.once('destroy', () => TouchControls.getInstance().hide());
     }
 
     private showGoPopup() {

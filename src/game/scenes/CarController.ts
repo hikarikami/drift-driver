@@ -1,5 +1,6 @@
 import { Scene } from 'phaser';
 import { KeyBindings, InputSource, PLAYER1_KEYS } from './GameConfig';
+import { TouchControls } from '../TouchControls';
 
 export interface CarInput {
     turnInput: number;
@@ -187,6 +188,15 @@ export class CarController {
             if (boost.isDown) thrustInput = true;
             if (brake.isDown) brakeInput = true;
         }
+
+        // Merge virtual touch buttons (OR with keyboard so both work together)
+        const touch = TouchControls.getInstance().state;
+        if (touch.left) turnInput = Math.max(-1, turnInput - 1);
+        if (touch.right) turnInput = Math.min(1, turnInput + 1);
+        if (touch.up) this.isAccelerating = true;
+        if (touch.down) reverseInput = true;
+        if (touch.boost) thrustInput = true;
+        if (touch.brake) brakeInput = true;
 
         return { turnInput, thrustInput, brakeInput, reverseInput, isAccelerating: this.isAccelerating };
     }
