@@ -26,6 +26,7 @@ export interface PlayerConfig {
     inputSource: InputSource;
     keys: KeyBindings;
     spritePrefix?: string;  // Car sprite folder name (e.g. 'car-1', 'car-2')
+    playerName?: string;    // Display name for scores
 }
 
 export interface GameSessionConfig {

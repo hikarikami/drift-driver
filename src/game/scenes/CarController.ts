@@ -45,20 +45,27 @@ export class CarController {
     boostBarDisplay: number;
     tireMarkIntensity = 0;
 
+    // Slip-angle physics state
+    slipAngle = 35;
+    gripLevel = 1.0;
+    private gripRecoveryTimer = 1.0;
+    private driftSign = 0;
+    private driftSignCooldown = 0;
+
     // === TUNING — exposed so DebugModal can tweak them ===
-    forwardThrust = 325;
-    drag = 160;
-    maxSpeed = 310;
+    forwardThrust = 320;
+    drag = 45;
+    maxSpeed = 373;
 
     // Hitbox
     readonly hitboxWidth = 42;
     readonly hitboxHeight = 20;
-    readonly headRadius = 10;   // legacy compat
+    readonly headRadius = 10;
     readonly totalCarFrames = 48;
 
     // Boost
-    private readonly boostThrust = 600;
-    readonly boostMaxSpeed = 512;
+    private readonly boostThrust = 620;
+    readonly boostMaxSpeed = 580;
     readonly boostMax = 1.25;
     private readonly boostDrainRate = 0.4;
     readonly boostRefillAmount = 0.35;
@@ -66,39 +73,66 @@ export class CarController {
     private readonly boostRampDown = 3.5;
 
     // Braking
-    private readonly brakeDragMultiplier = 5.0;
-    private readonly brakeSteerBoost = 1.2;
+    private readonly brakeDragMultiplier = 4.5;
+    private readonly brakeSteerBoost = 1.0;
 
     // Reverse
-    private readonly reverseThrust = 150;
-    private readonly maxReverseSpeed = 125;
+    private readonly reverseThrust = 120;
+    private readonly maxReverseSpeed = 105;
 
-    // Steering
-    private readonly targetAngularVel = 4.0;
-    private readonly minSteerFraction = 0.15;
-    private readonly steerSmoothing = 35;
-    private readonly returnSmoothing = 35;
-    private readonly maxDriftAngle = 2.2;
-    private readonly driftSoftness = 0.1;
+    // Steering — heavier, inertia-based
+    private readonly targetAngularVel = 3.8;
+    private readonly minSteerFraction = 0.12;
+    private readonly steerSmoothing = 18;
+    private readonly returnSmoothing = 22;
 
-    // Grip
-    private readonly gripRate = 4.5;
-    private readonly brakeGripRate = 1.4;
+    // Grip — slip-angle based lateral friction
+    private readonly gripSlipLow = 0.12;
+    private readonly gripSlipHigh = 0.52;
+    private readonly gripMin = 0.25;
+    private readonly lateralFriction = 8.5;
+    private readonly driftSpeedLoss = 0.38;
+
+    // Grip recovery — prevents instant re-grip after sliding
+    private readonly gripRecoveryTime = 5.28;
+    private readonly gripRecoverySlipThreshold = 0.14;
+
+    // Drift safety limit
+    private readonly maxDriftAngle = 0.15;
+    private readonly driftPushback = 5.0;
+
+    // Handbrake grip reduction
+    private readonly brakeGripMultiplier = 0.11;
+
+    // Counter-steer grip bonus
+    private readonly counterSteerGripBonus = 1.3;
+    private readonly counterSteerDeadzone = 0.1;
+
+    // Throttle grip interaction (power-on oversteer)
+    private readonly throttleGripPenalty = 0.82;
+
+    // Speed-sensitive grip falloff
+    private readonly speedGripFalloff = 0.15;
+
+    // Engine braking (coast drag)
+    private readonly coastDragMultiplier = 1.5;
+
+    // Angular damping (dt-based, replaces frame-rate-dependent constant)
+    private readonly angularDrag = 5.0;
+
+    // Tire mark chain-breaking
+    private readonly driftSignChangeCooldown = 0.20;
 
     // Tire marks (read by ParticleEffects)
     readonly rearWheelX = -4;
     readonly wheelSpreadY = 10;
 
     // Collision tuning
-    readonly collisionMass = 1;
-    readonly battleBounce = 0.8;
-    readonly obstacleBounce = 0.4;
+    readonly collisionMass = 0.7;
+    readonly battleBounce = 0.7;
+    readonly obstacleBounce = 0.35;
 
-    // Minimum speed — kept at 0 for pure Arcade
     readonly minSpeed = 0;
-
-    private width: number;
-    private height: number;
 
     // Backward compat: currentSpeed is now a read-through to body.speed
     get currentSpeed(): number {
@@ -110,10 +144,8 @@ export class CarController {
         // endGame tween doesn't crash.
     }
 
-    constructor(scene: Scene, width: number, height: number, keys: KeyBindings = PLAYER1_KEYS, playerId: number = 1, spritePrefix: string = 'car-1', inputSource: InputSource = 'keyboard') {
+    constructor(scene: Scene, keys: KeyBindings = PLAYER1_KEYS, playerId: number = 1, spritePrefix: string = 'car-1', inputSource: InputSource = 'keyboard') {
         this.scene = scene;
-        this.width = width;
-        this.height = height;
         this.keys = keys;
         this.playerId = playerId;
         this.spritePrefix = spritePrefix;
@@ -192,6 +224,36 @@ export class CarController {
         }
     }
 
+    private wrapHeadSprite() {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        const bounds = this.scene.physics.world.bounds;
+
+        // Wrap based on the hitbox size so the full car leaves
+        // before it appears on the opposite side.
+        const padX = this.hitboxWidth / 2;
+        const padY = this.hitboxHeight / 2;
+
+        const left = bounds.x - padX;
+        const right = bounds.right + padX;
+        const top = bounds.y - padY;
+        const bottom = bounds.bottom + padY;
+
+        let x = this.headSprite.x;
+        let y = this.headSprite.y;
+        let wrapped = false;
+
+        if (x < left) { x = right; wrapped = true; }
+        else if (x > right) { x = left; wrapped = true; }
+
+        if (y < top) { y = bottom; wrapped = true; }
+        else if (y > bottom) { y = top; wrapped = true; }
+
+        if (wrapped) {
+            this.headSprite.setPosition(x, y);
+            body.updateFromGameObject();
+        }
+    }
+
     // ================================================================
     //  REVERSE
     // ================================================================
@@ -241,63 +303,110 @@ export class CarController {
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
         const speed = body.speed;
 
-        // ---- STEERING ----
+        // ---- STEERING (heavier inertia-based feel) ----
         const speedRatio = Math.min(speed / this.maxSpeed, 1);
         const steerScale = this.minSteerFraction + (1 - this.minSteerFraction) * speedRatio;
-        const speedFactor = Math.min(speed / this.maxSpeed, 1);
-        const adjustedTurnRate = this.targetAngularVel * (0.6 + 0.4 * speedFactor);
+        const targetAV = input.turnInput * this.targetAngularVel * steerScale;
 
-        const targetAV = input.turnInput * adjustedTurnRate * steerScale;
         const smoothRate = input.turnInput !== 0 ? this.steerSmoothing : this.returnSmoothing;
         const lerpFactor = 1 - Math.exp(-smoothRate * dt);
         this.angularVel += (targetAV - this.angularVel) * lerpFactor;
 
-        // Drift angle limiting
-        if (speed > 1) {
-            const velAngle = Math.atan2(body.velocity.y, body.velocity.x);
-            let drift = this.headAngle - velAngle;
-            while (drift > Math.PI) drift -= Math.PI * 2;
-            while (drift < -Math.PI) drift += Math.PI * 2;
-
-            const softStart = this.maxDriftAngle - this.driftSoftness;
-            const absDrift = Math.abs(drift);
-            if (absDrift > softStart) {
-                const resistance = Math.min((absDrift - softStart) / this.driftSoftness, 1);
-                const pushback = resistance * resistance * 8 * dt;
-                if (drift > 0) {
-                    this.angularVel -= pushback;
-                    this.angularVel = Math.max(this.angularVel, -this.targetAngularVel);
-                } else {
-                    this.angularVel += pushback;
-                    this.angularVel = Math.min(this.angularVel, this.targetAngularVel);
-                }
-            }
-        }
-
-        // Handbrake drift boost
-        if (input.brakeInput && input.turnInput !== 0) {
+        if (input.brakeInput && input.turnInput !== 0 && speed > 40) {
             this.angularVel += input.turnInput * this.brakeSteerBoost * dt;
         }
 
         this.headAngle += this.angularVel * dt;
-        this.angularVel *= 0.95;
+        this.angularVel *= Math.exp(-this.angularDrag * dt);
 
-        // ---- GRIP: blend velocity toward heading ----
+        // ---- DECOMPOSE VELOCITY into forward & lateral ----
         const facingX = Math.cos(this.headAngle);
         const facingY = Math.sin(this.headAngle);
+        const perpX = -facingY;
+        const perpY = facingX;
 
         if (speed > 1) {
-            const grip = input.brakeInput ? this.brakeGripRate : this.gripRate;
-            const velDirX = body.velocity.x / speed;
-            const velDirY = body.velocity.y / speed;
-            const blend = 1 - Math.exp(-grip * dt);
-            const newDirX = velDirX + (facingX - velDirX) * blend;
-            const newDirY = velDirY + (facingY - velDirY) * blend;
-            const dirLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
-            if (dirLen > 0.001) {
-                body.velocity.x = (newDirX / dirLen) * speed;
-                body.velocity.y = (newDirY / dirLen) * speed;
+            let forwardSpeed = body.velocity.x * facingX + body.velocity.y * facingY;
+            let lateralSpeed = body.velocity.x * perpX + body.velocity.y * perpY;
+
+            // ---- SLIP ANGLE ----
+            this.slipAngle = Math.atan2(Math.abs(lateralSpeed), Math.abs(forwardSpeed));
+
+            // Drift angle (heading vs velocity) — used by counter-steer and safety limit
+            const velAngle = Math.atan2(body.velocity.y, body.velocity.x);
+            let driftAngle = this.headAngle - velAngle;
+            while (driftAngle > Math.PI) driftAngle -= Math.PI * 2;
+            while (driftAngle < -Math.PI) driftAngle += Math.PI * 2;
+
+            // ---- GRIP CURVE (smoothstep) ----
+            let gripFromCurve: number;
+            if (this.slipAngle <= this.gripSlipLow) {
+                gripFromCurve = 1.0;
+            } else if (this.slipAngle >= this.gripSlipHigh) {
+                gripFromCurve = this.gripMin;
+            } else {
+                const t = (this.slipAngle - this.gripSlipLow) / (this.gripSlipHigh - this.gripSlipLow);
+                const s = t * t * (3 - 2 * t);
+                gripFromCurve = 1.0 - (1.0 - this.gripMin) * s;
             }
+
+            // ---- GRIP RECOVERY (prevents instant re-grip after slide) ----
+            if (this.slipAngle > this.gripRecoverySlipThreshold) {
+                this.gripRecoveryTimer = 0;
+            } else {
+                this.gripRecoveryTimer = Math.min(
+                    this.gripRecoveryTime,
+                    this.gripRecoveryTimer + dt
+                );
+            }
+            const recoveryFactor = this.gripRecoveryTimer / this.gripRecoveryTime;
+            let effectiveGrip = this.gripMin + (gripFromCurve - this.gripMin) * recoveryFactor;
+
+            // Counter-steer bonus: steering against the drift rebuilds grip
+            if (Math.abs(driftAngle) > this.counterSteerDeadzone && driftAngle * input.turnInput < 0) {
+                effectiveGrip *= this.counterSteerGripBonus;
+            }
+
+            // Throttle reduces grip (power-on oversteer)
+            if (this.isAccelerating && speed > 50) {
+                effectiveGrip *= this.throttleGripPenalty;
+            }
+
+            // High-speed grip falloff
+            effectiveGrip *= 1.0 - this.speedGripFalloff * speedRatio;
+
+            if (input.brakeInput) {
+                effectiveGrip *= this.brakeGripMultiplier;
+            }
+
+            this.gripLevel = effectiveGrip;
+
+            // ---- LATERAL FRICTION (slip-angle sensitive) ----
+            const lateralRetain = Math.exp(-effectiveGrip * this.lateralFriction * dt);
+            lateralSpeed *= lateralRetain;
+
+            // ---- DRIFT SPEED LOSS (sliding costs forward speed) ----
+            if (this.slipAngle > this.gripSlipLow) {
+                const slipFraction = Math.min(
+                    (this.slipAngle - this.gripSlipLow) / (this.gripSlipHigh - this.gripSlipLow),
+                    1
+                );
+                forwardSpeed *= 1 - this.driftSpeedLoss * slipFraction * dt;
+            }
+
+            // ---- DRIFT SAFETY LIMIT ----
+            if (Math.abs(driftAngle) > this.maxDriftAngle) {
+                const excess = Math.abs(driftAngle) - this.maxDriftAngle;
+                const pushback = excess * this.driftPushback * dt;
+                this.angularVel += driftAngle > 0 ? -pushback : pushback;
+            }
+
+            // ---- RECONSTRUCT VELOCITY ----
+            body.velocity.x = facingX * forwardSpeed + perpX * lateralSpeed;
+            body.velocity.y = facingY * forwardSpeed + perpY * lateralSpeed;
+        } else {
+            this.slipAngle = 0;
+            this.gripLevel = 1.0;
         }
 
         // ---- BOOST ----
@@ -310,40 +419,29 @@ export class CarController {
         }
 
         // ---- THRUST / DRAG / BRAKE ----
-        const t = this.boostIntensity;
-        const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * t;
-        const activeMaxSpeed = this.maxSpeed + (this.boostMaxSpeed - this.maxSpeed) * t;
+        const bt = this.boostIntensity;
+        const thrust = this.forwardThrust + (this.boostThrust - this.forwardThrust) * bt;
+        const activeMaxSpeed = this.maxSpeed + (this.boostMaxSpeed - this.maxSpeed) * bt;
 
         body.setMaxSpeed(activeMaxSpeed);
 
         if (input.brakeInput) {
-            // Handbrake: high drag, tiny forward thrust to maintain slide
             body.setDrag(this.drag * this.brakeDragMultiplier, this.drag * this.brakeDragMultiplier);
             body.setAcceleration(facingX * thrust * 0.15, facingY * thrust * 0.15);
         } else if (this.isAccelerating || wantsBoost) {
-            // Driving forward
             body.setDrag(this.drag, this.drag);
             body.setAcceleration(facingX * thrust, facingY * thrust);
         } else {
-            // Coasting — Arcade drag decelerates naturally
-            body.setDrag(this.drag, this.drag);
+            body.setDrag(this.drag * this.coastDragMultiplier, this.drag * this.coastDragMultiplier);
             body.setAcceleration(0, 0);
         }
 
         // ---- TIRE MARKS ----
-        this.updateTireMarks(input, speed, dt);
+        this.updateTireMarks(input, body.speed, dt);
 
         // ---- SPRITE + WRAP ----
         this.updateCarSprite();
-
-        const hx = this.headSprite.x;
-        const hy = this.headSprite.y;
-        if (hx < 0) this.headSprite.setX(this.width);
-        if (hx > this.width) this.headSprite.setX(0);
-        if (hy < 0) this.headSprite.setY(this.height);
-        if (hy > this.height) this.headSprite.setY(0);
-
-        this.scene.physics.world.wrap(this.headSprite, 0);
+        this.wrapHeadSprite();
     }
 
     // ================================================================
@@ -359,18 +457,31 @@ export class CarController {
         while (driftAngle < -Math.PI) driftAngle += Math.PI * 2;
         const absDrift = Math.abs(driftAngle);
 
-        const tireThreshold = 0.5;
-        const tireFull = 1.0;
+        // Detect drift direction changes to break tire mark chains (e.g. figure-8s)
+        const newSign = driftAngle > 0.08 ? 1 : driftAngle < -0.08 ? -1 : 0;
+        if (this.driftSign !== 0 && newSign !== 0 && newSign !== this.driftSign) {
+            this.driftSignCooldown = this.driftSignChangeCooldown;
+        }
+        if (newSign !== 0) this.driftSign = newSign;
+        this.driftSignCooldown = Math.max(0, this.driftSignCooldown - dt);
+
+        const tireThreshold = 0.42;
+        const tireFull = 0.90;
 
         let targetTireIntensity = 0;
-        if (absDrift > tireThreshold && speed > 90) {
+        if (absDrift > tireThreshold && speed > 80) {
             targetTireIntensity = Math.min((absDrift - tireThreshold) / (tireFull - tireThreshold), 1);
         }
         if (input.brakeInput && speed > 30) {
             targetTireIntensity = Math.max(targetTireIntensity, Math.min(speed / 150, 1));
         }
 
-        const tireRampSpeed = targetTireIntensity > this.tireMarkIntensity ? 2.4 : 6.5;
+        // Force gap when drift direction flips (breaks continuous figure-8 marks)
+        if (this.driftSignCooldown > 0 && !input.brakeInput) {
+            targetTireIntensity = 0;
+        }
+
+        const tireRampSpeed = targetTireIntensity > this.tireMarkIntensity ? 2.2 : 8.5;
         const tireLerp = 1 - Math.exp(-tireRampSpeed * dt);
         this.tireMarkIntensity += (targetTireIntensity - this.tireMarkIntensity) * tireLerp;
         if (targetTireIntensity === 0 && this.tireMarkIntensity < 0.01) this.tireMarkIntensity = 0;
@@ -389,7 +500,7 @@ export class CarController {
             body.setVelocity(0, 0);
         }
 
-        this.scene.physics.world.wrap(this.headSprite, 0);
+        this.wrapHeadSprite();
         this.updateCarSprite();
     }
 
@@ -423,6 +534,12 @@ export class CarController {
         this.boostBarDisplay = this.boostMax;
         this.tireMarkIntensity = 0;
         this.isAccelerating = false;
+
+        this.slipAngle = 0;
+        this.gripLevel = 1.0;
+        this.gripRecoveryTimer = 1.0;
+        this.driftSign = 0;
+        this.driftSignCooldown = 0;
 
         this.headSprite.setPosition(x, y);
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;

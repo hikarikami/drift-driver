@@ -39,14 +39,14 @@ export class DebugModal {
     create(config: DebugConfig) {
         this.car = config.car;
 
-        // Debug Tools button (top-right)
-        this.debugBtn = this.scene.add.text(this.width / 2, 68, 'Debug Tools', {
-            fontFamily: 'Arial',
-            fontSize: 16,
+        // Debug Tools button (bottom-right)
+        this.debugBtn = this.scene.add.text(this.width - 10, this.height - 10, 'Debug Tools', {
+            fontFamily: 'BoldPixels',
+            fontSize: 22,
             color: '#ffffff',
             backgroundColor: '#555555',
-            padding: { x: 10, y: 6 },
-        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(30)
+            padding: { x: 14, y: 8 },
+        }).setOrigin(1, 1).setScrollFactor(0).setDepth(30)
             .setInteractive({ useHandCursor: true });
         this.debugBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
@@ -77,12 +77,12 @@ export class DebugModal {
         this.container.add(panel);
 
         const title = this.scene.add.text(this.width / 2, my + 18, 'Debug Tools', {
-            fontFamily: 'Arial Black', fontSize: 20, color: '#ffffff', align: 'center',
+            fontFamily: 'BoldPixels', fontSize: 20, color: '#ffffff', align: 'center',
         }).setOrigin(0.5, 0);
         this.container.add(title);
 
         const closeBtn = this.scene.add.text(mx + modalW - 14, my + 10, 'X', {
-            fontFamily: 'Arial Black', fontSize: 18, color: '#ff4444',
+            fontFamily: 'BoldPixels', fontSize: 18, color: '#ff4444',
             padding: { x: 6, y: 2 },
         }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
         closeBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -92,7 +92,7 @@ export class DebugModal {
         this.container.add(closeBtn);
 
         const btnStyle = {
-            fontFamily: 'Arial',
+            fontFamily: 'BoldPixels',
             fontSize: 15,
             color: '#ffffff',
             backgroundColor: '#444444',
@@ -106,7 +106,7 @@ export class DebugModal {
 
         const makeRow = (label: string, onMinus: () => void, onPlus: () => void) => {
             const lbl = this.scene.add.text(this.width / 2, cy, label, {
-                fontFamily: 'Arial', fontSize: 15, color: '#cccccc',
+                fontFamily: 'BoldPixels', fontSize: 15, color: '#cccccc',
             }).setOrigin(0.5, 0);
             this.container.add(lbl);
 
@@ -178,7 +178,7 @@ export class DebugModal {
         cy += rowH + 4;
 
         // Screen bounce toggle
-        const boundsBtn = this.scene.add.text(this.width / 2, cy, 'Screen Bounce: ON', {
+        const boundsBtn = this.scene.add.text(this.width / 2, cy, 'Screen Bounce: OFF', {
             ...btnStyle, padding: { x: 16, y: 6 },
         }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
         boundsBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -242,7 +242,7 @@ export class DebugModal {
 
         // Debug text
         this.debugText = this.scene.add.text(this.width / 2, cy, '', {
-            fontFamily: 'Arial',
+            fontFamily: 'BoldPixels',
             fontSize: 14,
             color: '#888888',
         }).setOrigin(0.5, 0);
@@ -265,8 +265,10 @@ export class DebugModal {
      */
     updateDebugText(speed: number) {
         if (this.debugText) {
+            const slipDeg = Math.round(this.car.slipAngle * 180 / Math.PI);
+            const grip = Math.round(this.car.gripLevel * 100);
             this.debugText.setText(
-                `Spd: ${Math.round(speed)}  Thrust: ${this.car.forwardThrust}`
+                `Spd: ${Math.round(speed)}  Slip: ${slipDeg}°  Grip: ${grip}%`
             );
         }
     }

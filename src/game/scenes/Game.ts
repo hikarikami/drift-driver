@@ -1,18 +1,18 @@
 import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
 import { SceneryManager } from './SceneryManager';
-import { CarController, CarInput } from './CarController';
+import { CarController } from './CarController';
 import { ParticleEffects } from './ParticleEffects';
 import { PickupManager } from './PickupManager';
 import { UIManager } from './UIManager';
 import { DebugModal } from './DebugModal';
 import {
     GameSessionConfig, GameMode, PlayerConfig,
-    createSinglePlayerConfig, PLAYER1_KEYS,
+    createSinglePlayerConfig,
 } from './GameConfig';
 import {
     getNetworkManager, destroyNetworkManager,
-    NetworkManager, InputPacket, StatePacket, CarState, SceneryPacket,
+    NetworkManager, InputPacket, StatePacket, CarState,
 } from '../NetworkManager';
 
 // ========== Per-player state bundle ==========
@@ -50,6 +50,7 @@ export class Game extends Scene {
     private gameOver = false;
     private timeRemaining = 60;
     private readonly startTime = 60;
+    private runStartTime = 0;
     private readonly pickupTimeBonus = 4;
     private readonly collisionCooldown = 500;
     private readonly crashSoundMaxPlays = 2;
@@ -95,6 +96,7 @@ export class Game extends Scene {
         this.players = [];
         this.gameOver = false;
         this.timeRemaining = this.startTime;
+        this.runStartTime = Date.now();
 
         // --- Sound & Music ---
         this.setupAudio();
@@ -196,13 +198,53 @@ export class Game extends Scene {
 
         // Delay first pickup spawn
         this.time.delayedCall(1000, () => { this.pickup.spawn(); });
+
+        // "Go!" popup near the player's car at game start
+        this.showGoPopup();
+    }
+
+    private showGoPopup() {
+        const car = this.players[0].car;
+        const x = car.headSprite.x;
+        const y = car.headSprite.y - 60;
+
+        const label = this.add.text(x, y, 'Collect the Capybara! GO!', {
+            fontFamily: 'BoldPixels',
+            fontSize: 26,
+            color: '#ffee44',
+            stroke: '#000000',
+            strokeThickness: 5,
+        }).setOrigin(0.5).setDepth(40).setAlpha(0).setScale(0.3);
+
+        // Bounce in
+        this.tweens.add({
+            targets: label,
+            alpha: 1,
+            scale: 1.15,
+            y: y - 30,
+            duration: 320,
+            ease: 'Back.easeOut',
+            onComplete: () => {
+                // Hold briefly, then fade out and rise
+                this.tweens.add({
+                    targets: label,
+                    alpha: 0,
+                    scale: 0.7,
+                    y: y - 75,
+                    duration: 450,
+                    ease: 'Quad.easeIn',
+                    delay: 900,
+                    onComplete: () => { label.destroy(); },
+                });
+            },
+        });
     }
 
     // ========== PLAYER FACTORY ==========
 
     private createPlayer(config: PlayerConfig): PlayerState {
         const spritePrefix = config.spritePrefix ?? 'car-1';
-        const car = new CarController(this, this.width, this.height, config.keys, config.id, spritePrefix, config.inputSource);
+        const car = new CarController(this, config.keys, config.id, spritePrefix, config.inputSource);
 
         // Create car physics body (invisible rectangle hitbox)
         car.headSprite = this.add.rectangle(0, 0, car.hitboxWidth, car.hitboxHeight, 0x00ff88, 0) as unknown as Phaser.GameObjects.Arc;
@@ -685,6 +727,7 @@ export class Game extends Scene {
 
     private endGame() {
         this.gameOver = true;
+        this.ui.fadeDimOverlay();
 
         for (const player of this.players) {
             const body = player.car.headSprite.body as Phaser.Physics.Arcade.Body;
@@ -704,9 +747,19 @@ export class Game extends Scene {
         this.soundManager.setLayerTarget('stopping', 0);
         this.soundManager.setLayerTarget('nitro', 0);
 
+        const runDuration = (Date.now() - this.runStartTime) / 1000;
+
         this.time.delayedCall(2000, () => {
             if (this.mode === 'single') {
-                this.ui.showGameOverUI(this.players[0].score, () => this.tryRestart());
+                const p1 = this.players[0];
+                const playerName = p1.config.playerName ?? 'Player 1';
+                this.ui.showGameOverUI(
+                    p1.score,
+                    runDuration,
+                    playerName,
+                    () => this.tryRestart(),
+                    () => this.backToMenu()
+                );
             } else {
                 const p1 = this.players[0].score;
                 const p2 = this.players[1]?.score ?? 0;

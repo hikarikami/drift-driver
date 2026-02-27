@@ -45,7 +45,7 @@ export class OnlineLobby extends Scene {
 
         // Title
         this.add.text(this.width / 2, this.height * 0.18, 'ONLINE BATTLE', {
-            fontFamily: 'Arial Black',
+            fontFamily: 'BoldPixels',
             fontSize: 48,
             color: '#4488ff',
             stroke: '#000000',
@@ -55,7 +55,7 @@ export class OnlineLobby extends Scene {
 
         // Status text
         this.statusText = this.add.text(this.width / 2, this.height * 0.38, 'Initializing...', {
-            fontFamily: 'Arial',
+            fontFamily: 'BoldPixels',
             fontSize: 22,
             color: '#cccccc',
             align: 'center',
@@ -63,7 +63,7 @@ export class OnlineLobby extends Scene {
 
         // Back button
         this.backBtn = this.add.text(this.width / 2, this.height * 0.78, 'BACK', {
-            fontFamily: 'Arial Black',
+            fontFamily: 'BoldPixels',
             fontSize: 22,
             color: '#ffffff',
             backgroundColor: '#555555',
@@ -106,7 +106,7 @@ export class OnlineLobby extends Scene {
 
             // Show the join link
             this.linkText = this.add.text(this.width / 2, this.height * 0.48, peerId, {
-                fontFamily: 'Arial Black',
+                fontFamily: 'BoldPixels',
                 fontSize: 28,
                 color: '#66ddff',
                 stroke: '#000000',
@@ -127,7 +127,7 @@ export class OnlineLobby extends Scene {
 
             // Instruction
             this.add.text(this.width / 2, this.height * 0.55, 'Click the code above to copy the invite link', {
-                fontFamily: 'Arial',
+                fontFamily: 'BoldPixels',
                 fontSize: 15,
                 color: '#888888',
                 align: 'center',
@@ -159,7 +159,7 @@ export class OnlineLobby extends Scene {
         if (this.startBtn) return;
 
         this.startBtn = this.add.text(this.width / 2, this.height * 0.65, 'START GAME', {
-            fontFamily: 'Arial Black',
+            fontFamily: 'BoldPixels',
             fontSize: 28,
             color: '#ffffff',
             backgroundColor: '#33aa55',

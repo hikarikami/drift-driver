@@ -7,6 +7,7 @@ import { createSinglePlayerConfig, createBattleConfig, GameSessionConfig, PLAYER
 export class MainMenu extends Scene {
     private width!: number;
     private height!: number;
+    private playerNameDom!: Phaser.GameObjects.DOMElement;
 
     constructor() {
         super('MainMenu');
@@ -20,17 +21,17 @@ export class MainMenu extends Scene {
         this.buildBackground();
 
         // --- Title ---
-        const titleY = this.height * 0.28;
+        const titleY = this.height * 0.22;
 
         const titleShadow = this.add.text(this.width / 2 + 3, titleY + 3, 'DRIFT', {
-            fontFamily: 'Arial Black',
+            fontFamily: 'BoldPixels',
             fontSize: 72,
             color: '#000000',
             align: 'center',
         }).setOrigin(0.5).setAlpha(0.3).setDepth(1);
 
-        const title = this.add.text(this.width / 2, titleY, 'DRIFT', {
-            fontFamily: 'Arial Black',
+        const title = this.add.text(this.width / 2, titleY, 'CAPPY DRIFTER', {
+            fontFamily: 'BoldPixels',
             fontSize: 72,
             color: '#ff6633',
             stroke: '#000000',
@@ -49,9 +50,12 @@ export class MainMenu extends Scene {
             ease: 'Sine.easeInOut',
         });
 
+        // --- Player Name Input ---
+        this.buildPlayerNameInput(this.height * 0.30);
+
         // --- Buttons ---
-        const buttonY = this.height * 0.52;
-        const buttonSpacing = 70;
+        const buttonY = this.height * 0.46;
+        const buttonSpacing = 72;
 
         this.createButton(
             this.width / 2,
@@ -59,7 +63,11 @@ export class MainMenu extends Scene {
             'SINGLE PLAYER',
             '#33aa55',
             '#44cc66',
-            () => this.startGame(createSinglePlayerConfig())
+            () => {
+                const config = createSinglePlayerConfig();
+                config.players[0].playerName = this.getPlayerName();
+                this.startGame(config);
+            }
         );
 
         this.createButton(
@@ -68,7 +76,11 @@ export class MainMenu extends Scene {
             'BATTLE',
             '#cc5533',
             '#ee7744',
-            () => this.startGame(createBattleConfig())
+            () => {
+                const config = createBattleConfig();
+                config.players[0].playerName = this.getPlayerName();
+                this.startGame(config);
+            }
         );
 
         this.createButton(
@@ -136,7 +148,7 @@ export class MainMenu extends Scene {
             width: number
         ) => {
             const titleText = this.add.text(x, y, title, {
-                fontFamily: 'Arial Black',
+                fontFamily: 'BoldPixels',
                 fontSize: 16,
                 color: '#ffffff',
             }).setOrigin(0, 0).setDepth(3);
@@ -159,13 +171,13 @@ export class MainMenu extends Scene {
                 const ry = rowStartY + i * rowGap;
 
                 this.add.text(x, ry, action, {
-                    fontFamily: 'Arial',
+                    fontFamily: 'BoldPixels',
                     fontSize: 13,
                     color: '#d0d0d0',
                 }).setOrigin(0, 0).setDepth(3);
 
                 this.add.text(keyColX, ry, key, {
-                    fontFamily: 'Arial Black',
+                    fontFamily: 'BoldPixels',
                     fontSize: 13,
                     color: '#ffffff',
                 }).setOrigin(1, 0).setDepth(3); // right aligned
@@ -180,7 +192,7 @@ export class MainMenu extends Scene {
 
         // --- Version / credit ---
         this.add.text(this.width / 2, this.height - 20, 'v0.1', {
-            fontFamily: 'Arial',
+            fontFamily: 'BoldPixels',
             fontSize: 11,
             color: '#444444',
             align: 'center',
@@ -230,7 +242,7 @@ export class MainMenu extends Scene {
         onClick: () => void
     ) {
         const btn = this.add.text(x, y, label, {
-            fontFamily: 'Arial Black',
+            fontFamily: 'BoldPixels',
             fontSize: 26,
             color: '#ffffff',
             backgroundColor: bgColor,
@@ -277,6 +289,65 @@ export class MainMenu extends Scene {
         btn.on('pointerdown', onClick);
 
         return btn;
+    }
+
+    private buildPlayerNameInput(y: number) {
+        const label = this.add.text(this.width / 2, y - 28, 'PLAYER NAME', {
+            fontFamily: 'BoldPixels',
+            fontSize: 16,
+            color: '#aaaaaa',
+            align: 'center',
+            letterSpacing: 3,
+        }).setOrigin(0.5).setDepth(3);
+
+        label.setAlpha(0);
+        this.tweens.add({ targets: label, alpha: 1, duration: 500, delay: 200 });
+
+        const inputEl = document.createElement('input');
+        inputEl.type = 'text';
+        inputEl.value = 'Player 1';
+        inputEl.maxLength = 16;
+        inputEl.spellcheck = false;
+        inputEl.autocomplete = 'off';
+        inputEl.style.cssText = [
+            'background: rgba(0,0,0,0.65)',
+            'border: 2px solid #ff6633',
+            'border-radius: 6px',
+            'color: #ffffff',
+            'font-family: Arial Black, sans-serif',
+            'font-size: 22px',
+            'padding: 8px 18px',
+            'text-align: center',
+            'outline: none',
+            'width: 260px',
+            'box-sizing: border-box',
+            'transition: border-color 0.15s',
+        ].join(';');
+
+        inputEl.addEventListener('focus', () => {
+            inputEl.style.borderColor = '#ffaa55';
+        });
+        inputEl.addEventListener('blur', () => {
+            inputEl.style.borderColor = '#ff6633';
+        });
+        inputEl.addEventListener('keydown', (e) => e.stopPropagation());
+        inputEl.addEventListener('keyup', (e) => e.stopPropagation());
+
+        this.playerNameDom = this.add.dom(this.width / 2, y + 10, inputEl).setDepth(3).setAlpha(0);
+        this.tweens.add({ targets: this.playerNameDom, alpha: 1, duration: 500, delay: 200 });
+    }
+
+    private getPlayerName(): string {
+        if (!this.playerNameDom) return 'Player 1';
+        const el = this.playerNameDom.node as HTMLInputElement;
+        return el.value.trim() || 'Player 1';
+    }
+
+    // Clean up DOM element when leaving the scene
+    shutdown() {
+        if (this.playerNameDom) {
+            this.playerNameDom.destroy();
+        }
     }
 
     private startGame(config: GameSessionConfig) {
