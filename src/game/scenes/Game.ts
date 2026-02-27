@@ -48,10 +48,10 @@ export class Game extends Scene {
 
     // Shared state
     private gameOver = false;
-    private timeRemaining = 60;
-    private readonly startTime = 60;
+    private timeRemaining = 45;
+    private readonly startTime = 45;
     private runStartTime = 0;
-    private readonly pickupTimeBonus = 4;
+    private readonly pickupTimeBonus = 3;
     private readonly collisionCooldown = 500;
     private readonly crashSoundMaxPlays = 2;
     private readonly crashSoundCooldown = 1750;
