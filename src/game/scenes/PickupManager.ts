@@ -9,7 +9,7 @@ export class PickupManager {
 
     pickupX!: number;
     pickupY!: number;
-    readonly pickupCollectDist = 32;
+    readonly pickupCollectDist = 37;
     pickupSprite!: Phaser.GameObjects.Image;
     pickupShadow!: Phaser.GameObjects.Image;
 

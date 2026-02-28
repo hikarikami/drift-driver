@@ -179,7 +179,7 @@ export class UIManager {
     }
 
     /**
-     * Shows the +time bonus popup at a given position
+     * Shows the +time bonus popup at a given position (green, seconds format)
      */
     showTimeBonusPopup(x: number, y: number, bonus: number) {
         const popup = this.scene.add.text(x, y, `+${bonus}s`, {
@@ -212,6 +212,78 @@ export class UIManager {
         });
     }
 
+    /**
+     * Shows the jump score bonus popup — gold colour, larger pop, distinct from time popup.
+     */
+    showJumpBonusPopup(x: number, y: number, bonus: number) {
+        const popup = this.scene.add.text(x, y, `+${bonus}`, {
+            fontFamily: 'BoldPixels',
+            fontSize: 34,
+            color: '#ffcc00',
+            stroke: '#000000',
+            strokeThickness: 5,
+            align: 'center',
+        }).setOrigin(0.5).setDepth(15).setAlpha(0).setScale(0.2);
+
+        // Slam in with a big pop
+        this.scene.tweens.add({
+            targets: popup,
+            alpha: 1,
+            scale: 1.4,
+            y: y - 30,
+            duration: 250,
+            ease: 'Back.easeOut',
+            onComplete: () => {
+                // Brief hold at peak size, then shrink + rise + fade
+                this.scene.tweens.add({
+                    targets: popup,
+                    alpha: 0,
+                    scale: 0.7,
+                    y: y - 75,
+                    duration: 500,
+                    ease: 'Quad.easeIn',
+                    delay: 220,
+                    onComplete: () => popup.destroy(),
+                });
+            },
+        });
+    }
+
+    /**
+     * Shows a smaller "Air Time!" label below the jump score popup.
+     */
+    showAirTimePopup(x: number, y: number) {
+        const popup = this.scene.add.text(x, y, 'Air Time!', {
+            fontFamily: 'BoldPixels',
+            fontSize: 20,
+            color: '#88ddff',
+            stroke: '#000000',
+            strokeThickness: 4,
+            align: 'center',
+        }).setOrigin(0.5).setDepth(15).setAlpha(0).setScale(0.2);
+
+        this.scene.tweens.add({
+            targets: popup,
+            alpha: 1,
+            scale: 1.1,
+            y: y - 20,
+            duration: 220,
+            ease: 'Back.easeOut',
+            onComplete: () => {
+                this.scene.tweens.add({
+                    targets: popup,
+                    alpha: 0,
+                    scale: 0.6,
+                    y: y - 55,
+                    duration: 450,
+                    ease: 'Quad.easeIn',
+                    delay: 300,
+                    onComplete: () => popup.destroy(),
+                });
+            },
+        });
+    }
+
     fadeDimOverlay() {
         this.dimOverlay = this.scene.add.graphics()
             .setScrollFactor(0)
@@ -235,6 +307,7 @@ export class UIManager {
     async showGameOverUI(
         score: number,
         duration: number,
+        airTime: number,
         playerName: string,
         onRestart: () => void,
         onMenu: () => void
@@ -243,7 +316,7 @@ export class UIManager {
         this.timerText.setVisible(false);
 
         // Always persist locally first (offline fallback)
-        const localRank  = HighScoreManager.saveScore(playerName, score, duration);
+        const localRank  = HighScoreManager.saveScore(playerName, score, duration, airTime);
         const localScores = HighScoreManager.getTopScores();
 
         // ── Layout anchors ──────────────────────────────────────────────────
@@ -251,8 +324,8 @@ export class UIManager {
         const titleY   = this.height * 0.09;
         const nameY    = this.height * 0.15;
         const scoreY   = this.height * 0.21;
-        const badgeY   = this.height * 0.26;
-        const tableTop = this.height * 0.31;
+        const badgeY   = this.height * 0.31;  // shifted down to fit airTime row
+        const tableTop = this.height * 0.36;  // shifted down to fit airTime row
         const btnY     = this.height * 0.88;
 
         // Pre-compute top-5 card bottom so context card can sit right below it
@@ -288,7 +361,7 @@ export class UIManager {
             `Score: ${score.toLocaleString()}   •   Run Time: ${formatTime(duration)}`,
             {
                 fontFamily: 'BoldPixels',
-                fontSize: 36,
+                fontSize: 34,
                 color: '#ffffff',
                 stroke: '#000000',
                 strokeThickness: 5,
@@ -296,6 +369,22 @@ export class UIManager {
             }
         ).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
         this.scene.tweens.add({ targets: this.finalScoreText, alpha: 1, duration: 400, delay: 250 });
+
+        // ── Air time sub-label ───────────────────────────────────────────────
+        const airTimeLabel = this.scene.add.text(
+            cx, scoreY + 38,
+            `✈ Air Time: ${airTime.toFixed(1)}s`,
+            {
+                fontFamily: 'BoldPixels',
+                fontSize: 22,
+                color: '#aaddff',
+                stroke: '#000000',
+                strokeThickness: 3,
+                align: 'center',
+            }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+        this.scene.tweens.add({ targets: airTimeLabel, alpha: 1, duration: 400, delay: 320 });
+        this.resultElements.push(airTimeLabel);
 
         // ── Loading placeholder in the table area ────────────────────────────
         const loadingText = this.scene.add.text(cx, tableTop + 80, 'Loading leaderboard...', {
@@ -329,12 +418,12 @@ export class UIManager {
 
         // ── Online leaderboard ───────────────────────────────────────────────
         try {
-            await LeaderboardService.submitScore(playerName, score, duration);
+            await LeaderboardService.submitScore(playerName, score, duration, airTime);
             if (!this._gameOverActive) return;
 
             const [topScores, playerContext] = await Promise.all([
                 LeaderboardService.getTopScores(10),
-                LeaderboardService.getPlayerContext(playerName, score, duration),
+                LeaderboardService.getPlayerContext(playerName, score, duration, airTime),
             ]);
             if (!this._gameOverActive) return;
 
@@ -488,7 +577,7 @@ export class UIManager {
             this.scene.tweens.add({ targets: nameTxt, alpha: 1, duration: 300, delay });
             this.resultElements.push(nameTxt);
 
-            const scoreTxt = this.scene.add.text(panelX + panelW - PAD_X - 100, rowY, '', {
+            const scoreTxt = this.scene.add.text(panelX + panelW - PAD_X - 160, rowY, '', {
                 fontFamily: 'BoldPixels', fontSize: 20, color: '#cccccc',
             }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
             this.scene.tweens.add({ targets: scoreTxt, alpha: 1, duration: 300, delay });
@@ -561,10 +650,14 @@ export class UIManager {
                     scoreTxt.setText('');
                     timeTxt.setText('');
                 } else {
+                    const airStr = (entry.airTime ?? 0) > 0 ? `  ✈${(entry.airTime ?? 0).toFixed(1)}s` : '';
+                    const displayName = entry.playerName.length > 12
+                        ? entry.playerName.substring(0, 12) + '…'
+                        : entry.playerName;
                     starTxt.setText(isThisRun ? '*' : '');
-                    nameTxt.setText(entry.playerName).setColor(isThisRun ? '#ffcc66' : '#999999');
+                    nameTxt.setText(displayName).setColor(isThisRun ? '#ffcc66' : '#999999');
                     scoreTxt.setText(entry.score.toLocaleString()).setColor(isThisRun ? '#ffffff' : '#cccccc');
-                    timeTxt.setText(formatTime(entry.duration)).setColor(isThisRun ? '#aaddff' : '#777777');
+                    timeTxt.setText(`${formatTime(entry.duration)}${airStr}`).setColor(isThisRun ? '#aaddff' : '#777777');
                 }
             }
 
@@ -680,25 +773,29 @@ export class UIManager {
                 return;
             }
 
+            const displayName = entry.playerName.length > 12
+                ? entry.playerName.substring(0, 12) + '…'
+                : entry.playerName;
             const nameText = this.scene.add.text(
                 panelX + PAD_X + 70, rowY,
-                entry.playerName,
+                displayName,
                 { fontFamily: 'BoldPixels', fontSize: 18, color: isPlayer ? '#ffcc66' : '#999999' }
             ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
             this.scene.tweens.add({ targets: nameText, alpha: 1, duration: 300, delay });
             this.resultElements.push(nameText);
 
             const scoreText = this.scene.add.text(
-                panelX + panelW - PAD_X - 100, rowY,
+                panelX + panelW - PAD_X - 160, rowY,
                 entry.score.toLocaleString(),
                 { fontFamily: 'BoldPixels', fontSize: 20, color: isPlayer ? '#ffffff' : '#cccccc' }
             ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
             this.scene.tweens.add({ targets: scoreText, alpha: 1, duration: 300, delay });
             this.resultElements.push(scoreText);
 
+            const airStr = (entry.airTime ?? 0) > 0 ? `  ✈${(entry.airTime ?? 0).toFixed(1)}s` : '';
             const timeText = this.scene.add.text(
                 panelX + panelW - PAD_X, rowY,
-                formatTime(entry.duration),
+                `${formatTime(entry.duration)}${airStr}`,
                 { fontFamily: 'BoldPixels', fontSize: 16, color: isPlayer ? '#aaddff' : '#777777' }
             ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
             this.scene.tweens.add({ targets: timeText, alpha: 1, duration: 300, delay });

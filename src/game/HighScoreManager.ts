@@ -2,9 +2,10 @@ export interface HighScoreEntry {
     playerName: string;
     score: number;
     duration: number; // seconds
+    airTime: number;  // cumulative airtime seconds
 }
 
-const STORAGE_KEY = 'drift_highscores_v2';
+const STORAGE_KEY = 'drift_highscores_v3';
 const MAX_SCORES = 10;
 
 function loadBoard(): HighScoreEntry[] {
@@ -28,20 +29,20 @@ function saveBoard(entries: HighScoreEntry[]): void {
 
 export const HighScoreManager = {
     /**
-     * Returns the global top scores sorted best-first (up to 5 entries).
+     * Returns the global top scores sorted best-first (up to MAX_SCORES entries).
      */
     getTopScores(): HighScoreEntry[] {
         return loadBoard();
     },
 
     /**
-     * Adds a score to the global leaderboard. Keeps only the top 5.
-     * Returns the 1-based rank (1–5) if it placed, or null if it didn't make the cut.
+     * Adds a score to the local leaderboard. Keeps only the top MAX_SCORES.
+     * Returns the 1-based rank if it placed, or null if it didn't make the cut.
      */
-    saveScore(playerName: string, score: number, duration: number): number | null {
+    saveScore(playerName: string, score: number, duration: number, airTime: number): number | null {
         const board = loadBoard();
 
-        const newEntry: HighScoreEntry = { playerName, score, duration };
+        const newEntry: HighScoreEntry = { playerName, score, duration, airTime };
 
         const updated = [...board, newEntry]
             .sort((a, b) => b.score - a.score)

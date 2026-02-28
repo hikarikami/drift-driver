@@ -13,9 +13,16 @@ export interface DecorationData {
     treeNum: number;
 }
 
+export interface RampData {
+    x: number;
+    y: number;
+    variant: 'dirt-bump-left' | 'dirt-bump-right';
+}
+
 export interface SceneryData {
     obstacles: ObstacleData[];
     decorations: DecorationData[];
+    ramps: RampData[];
 }
 
 /**
@@ -56,6 +63,23 @@ export class SceneryManager {
     // Collider zones for spawn checks
     decorations: Phaser.GameObjects.Zone[] = [];
 
+    // ── Ramps ──────────────────────────────────────────────────────────────
+    // Visual sprites
+    private rampSprites: Phaser.GameObjects.Image[] = [];
+    private rampShadows: Phaser.GameObjects.Image[] = [];
+
+    // Serialisable ramp positions (sent host→guest)
+    rampData: RampData[] = [];
+
+    // [Both] Hitbox geometry; Arcade uses Zones, Matter uses sensor rectangles
+    rampHitboxData: { x: number; y: number; w: number; h: number }[] = [];
+
+    // [Arcade only] Static group of overlap Zones
+    rampHitboxes!: Phaser.Physics.Arcade.StaticGroup;
+
+    // [Matter only] Sensor bodies for ramp triggers
+    matterRamps: any[] = [];
+
     constructor(scene: Scene, width: number, height: number) {
         this.scene = scene;
         this.width = width;
@@ -95,6 +119,26 @@ export class SceneryManager {
 
         for (const zone of this.decorations) zone.destroy();
         this.decorations = [];
+
+        // Ramp cleanup
+        for (const sprite of this.rampSprites) sprite.destroy();
+        for (const shadow of this.rampShadows) shadow.destroy();
+        this.rampSprites = [];
+        this.rampShadows = [];
+        this.rampData = [];
+        this.rampHitboxData = [];
+
+        if (this.rampHitboxes) {
+            this.rampHitboxes.clear(true, true);
+        }
+
+        if (this.matterRamps.length > 0) {
+            const matterWorld = (this.scene as any).matter?.world;
+            for (const body of this.matterRamps) {
+                matterWorld?.remove(body, true);
+            }
+            this.matterRamps = [];
+        }
     }
 
     // ========== PIXEL-SCANNING HITBOX ==========
@@ -267,14 +311,25 @@ export class SceneryManager {
         if (sceneryData) {
             this.spawnObstaclesFromData(sceneryData.obstacles);
             this.spawnDecorationsFromData(sceneryData.decorations);
+            if (sceneryData.ramps) {
+                this.spawnRampsFromData(sceneryData.ramps);
+            }
             return sceneryData;
         }
 
         // Otherwise generate and return data (host can send to guest).
-        const result: SceneryData = { obstacles: [], decorations: [] };
+        const result: SceneryData = { obstacles: [], decorations: [], ramps: [] };
 
         const obstaclePositions = this.spawnObstacles([], result);
-        this.spawnDecorativeScenery(obstaclePositions, result);
+        const decorationPositions = this.spawnDecorativeScenery(obstaclePositions, result);
+
+        // Ramps avoid obstacles, decorations, and the player spawn area (map centre)
+        const rampAvoidPositions = [
+            ...obstaclePositions,
+            ...decorationPositions,
+            { x: this.width / 2, y: this.height / 2 },
+        ];
+        this.buildRamps(rampAvoidPositions, result);
 
         return result;
     }
@@ -486,7 +541,7 @@ export class SceneryManager {
      * Spawns decorative scenery (cacti, plants, etc.)
      * These are visual only - car drives through them
      */
-    private spawnDecorativeScenery(avoidPositions: { x: number, y: number }[] = [], result?: SceneryData) {
+    private spawnDecorativeScenery(avoidPositions: { x: number, y: number }[] = [], result?: SceneryData): { x: number; y: number }[] {
         const config = {
             count: 25,
             minSpacingFromObstacles: 15,
@@ -502,6 +557,8 @@ export class SceneryManager {
             maxAttempts: 20
         };
 
+        const spawnedPositions: { x: number; y: number }[] = [];
+
         for (let i = 0; i < config.count; i++) {
             const pos = this.findValidSpawnPosition(
                 avoidPositions,
@@ -511,6 +568,7 @@ export class SceneryManager {
             );
 
             if (!pos) continue;
+            spawnedPositions.push(pos);
 
             const textureNum = Phaser.Math.Between(config.textureRange.min, config.textureRange.max);
             const textureName = `${config.texturePrefix}${textureNum}`;
@@ -534,6 +592,8 @@ export class SceneryManager {
             decorative.setDepth(config.depth);
             this.decorationSprites.push(decorative);
         }
+
+        return spawnedPositions;
     }
 
     private spawnDecorationsFromData(decorations: DecorationData[]) {
@@ -568,6 +628,101 @@ export class SceneryManager {
             decorative.setDepth(config.depth);
             this.decorationSprites.push(decorative);
         }
+    }
+
+    // ========== RAMP SPAWNING ==========
+
+    /**
+     * Spawns 3 jump bumps at random positions, avoiding obstacles.
+     * Each bump randomly uses either the 'dirt-bump-left' or 'dirt-bump-right' sprite.
+     */
+    buildRamps(existingPositions: { x: number; y: number }[] = [], result?: SceneryData) {
+        const config = {
+            count: 3,
+            minSpacing: 200,
+            marginFromEdge: 120,
+            maxAttempts: 25,
+            scale: 0.26,
+            depth: 2,
+            hitboxW: 130,
+            hitboxH: 50,
+        };
+
+        const positions: { x: number; y: number }[] = [...existingPositions];
+
+        if (!this.rampHitboxes && PHYSICS_ENGINE !== 'matter') {
+            this.rampHitboxes = this.scene.physics.add.staticGroup();
+        }
+
+        const variants: RampData['variant'][] = ['dirt-bump-left', 'dirt-bump-right'];
+
+        for (let i = 0; i < config.count; i++) {
+            const pos = this.findValidSpawnPosition(
+                positions,
+                config.minSpacing,
+                config.marginFromEdge,
+                config.maxAttempts
+            );
+            if (!pos) continue;
+            positions.push(pos);
+
+            const variant = variants[Phaser.Math.Between(0, 1)];
+            result?.ramps.push({ x: pos.x, y: pos.y, variant });
+            this.placeRamp(pos.x, pos.y, variant, i, config);
+        }
+    }
+
+    private placeRamp(
+        x: number, y: number, variant: RampData['variant'], index: number,
+        config: { scale: number; depth: number; hitboxW: number; hitboxH: number }
+    ) {
+        // Shadow — small offset because ramps are flat/low objects
+        const shadow = this.scene.add.image(x - 2, y + 2, variant)
+            .setOrigin(0.43, 0.49)
+            .setScale(config.scale * 1.03)
+            .setDepth(config.depth - 1)
+            .setTint(0x000000)
+            .setAlpha(0.40)
+            .setBlendMode(Phaser.BlendModes.DARKEN);
+        shadow.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
+        this.rampShadows.push(shadow);
+
+        const sprite = this.scene.add.image(x, y, variant)
+            .setOrigin(0.5, 0.5)
+            .setScale(config.scale)
+            .setDepth(config.depth);
+        sprite.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
+        this.rampSprites.push(sprite);
+
+        // Hitbox zone
+        const zone = this.scene.add.zone(x, y, config.hitboxW, config.hitboxH);
+        zone.setData('rampIndex', index);
+
+        if (PHYSICS_ENGINE !== 'matter') {
+            this.scene.physics.add.existing(zone, true);
+            this.rampHitboxes.add(zone);
+        }
+
+        this.rampHitboxData.push({ x, y, w: config.hitboxW, h: config.hitboxH });
+        this.rampData.push({ x, y, variant });
+    }
+
+    private spawnRampsFromData(ramps: RampData[]) {
+        const config = {
+            scale: 0.35,
+            depth: 2,
+            hitboxW: 120,
+            hitboxH: 60,
+        };
+
+        if (!this.rampHitboxes && PHYSICS_ENGINE !== 'matter') {
+            this.rampHitboxes = this.scene.physics.add.staticGroup();
+        }
+
+        ramps.forEach((ramp, i) => {
+            const variant: RampData['variant'] = ramp.variant ?? 'dirt-bump-left';
+            this.placeRamp(ramp.x, ramp.y, variant, i, config);
+        });
     }
 
     /**

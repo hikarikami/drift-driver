@@ -10,6 +10,9 @@
 //             manual thrust/drag integration, same slip-angle feel)
 export const PHYSICS_ENGINE: 'arcade' | 'matter' = 'matter';
 
+// ========== JUMP / RAMP ==========
+export const JUMP_SCORE_BONUS = 50;
+
 
 export type GameMode = 'single' | 'battle' | 'online';
 

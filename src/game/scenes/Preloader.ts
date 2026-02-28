@@ -62,6 +62,10 @@ export class Preloader extends Scene
             this.load.image(`tree-${i}`, `scenery/cactus/tree-${i}.png`);
         }
 
+        // Jump / ramp tiles (two variants, randomly assigned per ramp)
+        this.load.image('dirt-bump-left',  'scenery/dirt-bump-left.png');
+        this.load.image('dirt-bump-right', 'scenery/dirt-bump-right.png');
+
         // Sounds
         this.load.audio('screech_sfx', 'sounds/screech.mp3');
         this.load.audio('engine_sfx', 'sounds/general.mp3');
@@ -71,7 +75,11 @@ export class Preloader extends Scene
         this.load.audio('crash-1', 'sounds/car-crash-1.mp3');
         this.load.audio('crash-2', 'sounds/car-crash-2.mp3');
         this.load.audio('crash-3', 'sounds/car-crash-3.mp3');
-        this.load.audio('trick', 'sounds/trick-1.mp3'); // Placeholder - add a quick "ding" or "whip" sound
+        this.load.audio('trick', 'sounds/trick-1.mp3');
+        this.load.audio('jump-cardoor',     'sounds/cardoor.mp3');
+        this.load.audio('jump-dirt',        'sounds/dirt-sound.mp3');
+        this.load.audio('jump-crunch',      'sounds/crunch.mp3');
+        this.load.audio('jump-rocks-smash', 'sounds/rocks-smash.mp3');
         this.load.audio('theme1', 'music/music-1.mp3');
         this.load.audio('theme2', 'music/music-2.mp3');
 
@@ -85,10 +93,6 @@ export class Preloader extends Scene
 
     create ()
     {
-        //  When all the assets have loaded, it's often worth creating global objects here that the rest of the game can use.
-        //  For example, you can define global animations here, so we can use them in other scenes.
-
-        //  Move to the MainMenu. You could also swap this for a Scene Transition, such as a camera fade.
         this.scene.start('MainMenu');
     }
 }

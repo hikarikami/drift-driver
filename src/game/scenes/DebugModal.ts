@@ -2,6 +2,13 @@ import { Scene } from 'phaser';
 import { SoundManager } from '../SoundManager';
 import { ICarController } from './CarController';
 
+export interface HitboxDebugData {
+    obstacles: { x: number; y: number; w: number; h: number }[];
+    ramps:     { x: number; y: number; w: number; h: number }[];
+    pickup:    { x: number; y: number; radius: number } | null;
+    cars:      { x: number; y: number; w: number; h: number; angle: number }[];
+}
+
 export interface DebugConfig {
     car: ICarController;
     soundManager: SoundManager;
@@ -10,6 +17,8 @@ export interface DebugConfig {
     musicMuted: boolean;
     onMusicMuteToggle: (muted: boolean) => void;
     onEndRun: () => void;
+    /** Optional supplier for live hitbox data — enables the hitbox overlay */
+    getHitboxData?: () => HitboxDebugData;
 }
 
 export class DebugModal {
@@ -26,6 +35,9 @@ export class DebugModal {
     debugText!: Phaser.GameObjects.Text;
 
     private car!: ICarController;
+    private getHitboxData?: () => HitboxDebugData;
+    private hitboxGraphics?: Phaser.GameObjects.Graphics;
+    private hitboxesVisible = false;
 
     constructor(scene: Scene, width: number, height: number) {
         this.scene = scene;
@@ -38,6 +50,7 @@ export class DebugModal {
      */
     create(config: DebugConfig) {
         this.car = config.car;
+        this.getHitboxData = config.getHitboxData;
 
         // Debug Tools button (bottom-right)
         this.debugBtn = this.scene.add.text(this.width - 10, this.height - 10, 'Debug Tools', {
@@ -177,13 +190,14 @@ export class DebugModal {
         this.container.add(sfxBtn);
         cy += rowH + 4;
 
-        // Screen bounce toggle
+        // Screen bounce toggle — Arcade only (no-op in Matter mode)
         const boundsBtn = this.scene.add.text(this.width / 2, cy, 'Screen Bounce: OFF', {
             ...btnStyle, padding: { x: 16, y: 6 },
         }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
         boundsBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
-            const body = this.car.headSprite.body as Phaser.Physics.Arcade.Body;
+            const body = this.car.headSprite.body as Phaser.Physics.Arcade.Body | null;
+            if (!body?.setCollideWorldBounds) return;
             const currentState = body.collideWorldBounds;
             body.setCollideWorldBounds(!currentState);
             boundsBtn.setText(!currentState ? 'Screen Bounce: ON' : 'Screen Bounce: OFF');
@@ -191,32 +205,35 @@ export class DebugModal {
         this.container.add(boundsBtn);
         cy += rowH + 4;
 
-        // Hitbox toggle
+        // Hitbox toggle — custom overlay works with both Arcade and Matter
         const hitboxBtn = this.scene.add.text(this.width / 2, cy, 'Show Hitboxes: OFF', {
             ...btnStyle, padding: { x: 16, y: 6 },
         }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
         hitboxBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
-            if (this.scene.physics.world.debugGraphic) {
-                this.scene.physics.world.debugGraphic.clear();
-                this.scene.physics.world.debugGraphic.destroy();
-                this.scene.physics.world.debugGraphic = null as any;
-                hitboxBtn.setText('Show Hitboxes: OFF');
-            } else {
-                this.scene.physics.world.createDebugGraphic();
+            this.hitboxesVisible = !this.hitboxesVisible;
+            if (this.hitboxesVisible) {
+                if (!this.hitboxGraphics) {
+                    this.hitboxGraphics = this.scene.add.graphics().setDepth(98);
+                }
                 hitboxBtn.setText('Show Hitboxes: ON');
+            } else {
+                this.hitboxGraphics?.clear();
+                hitboxBtn.setText('Show Hitboxes: OFF');
             }
         });
         this.container.add(hitboxBtn);
         cy += rowH + 4;
 
-        // Collision toggle
+        // Collision toggle — Arcade only (no-op in Matter mode)
         const collisionBtn = this.scene.add.text(this.width / 2, cy, 'Collisions: ON', {
             ...btnStyle, padding: { x: 16, y: 6 },
         }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true });
         collisionBtn.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
-            const colliders = this.scene.physics.world.colliders.getActive();
+            const world = (this.scene as any).physics?.world;
+            if (!world?.colliders) return;
+            const colliders = world.colliders.getActive();
             if (colliders.length > 0 && colliders[0].active) {
                 colliders.forEach((collider: any) => { collider.active = false; });
                 collisionBtn.setText('Collisions: OFF');
@@ -261,7 +278,8 @@ export class DebugModal {
     }
 
     /**
-     * Updates the debug text with current speed info
+     * Updates the debug text with current speed info and redraws the hitbox overlay.
+     * Called every frame from Game.ts.
      */
     updateDebugText(speed: number) {
         if (this.debugText) {
@@ -270,6 +288,58 @@ export class DebugModal {
             this.debugText.setText(
                 `Spd: ${Math.round(speed)}  Slip: ${slipDeg}°  Grip: ${grip}%`
             );
+        }
+        if (this.hitboxesVisible && this.hitboxGraphics && this.getHitboxData) {
+            this.drawHitboxes(this.getHitboxData());
+        }
+    }
+
+    /** Redraws the full hitbox overlay from live data. */
+    private drawHitboxes(data: HitboxDebugData) {
+        const g = this.hitboxGraphics!;
+        g.clear();
+
+        // Obstacles — red
+        g.lineStyle(1, 0xff4444, 0.9);
+        g.fillStyle(0xff4444, 0.15);
+        for (const hb of data.obstacles) {
+            g.fillRect(hb.x - hb.w / 2, hb.y - hb.h / 2, hb.w, hb.h);
+            g.strokeRect(hb.x - hb.w / 2, hb.y - hb.h / 2, hb.w, hb.h);
+        }
+
+        // Ramps / jumps — yellow
+        g.lineStyle(2, 0xffdd00, 0.9);
+        g.fillStyle(0xffdd00, 0.2);
+        for (const hb of data.ramps) {
+            g.fillRect(hb.x - hb.w / 2, hb.y - hb.h / 2, hb.w, hb.h);
+            g.strokeRect(hb.x - hb.w / 2, hb.y - hb.h / 2, hb.w, hb.h);
+        }
+
+        // Pickup — green circle
+        if (data.pickup) {
+            g.lineStyle(2, 0x44ff44, 0.9);
+            g.fillStyle(0x44ff44, 0.2);
+            g.fillCircle(data.pickup.x, data.pickup.y, data.pickup.radius);
+            g.strokeCircle(data.pickup.x, data.pickup.y, data.pickup.radius);
+        }
+
+        // Cars — cyan rotated rectangle
+        g.lineStyle(2, 0x00ffff, 0.9);
+        g.fillStyle(0x00ffff, 0.25);
+        for (const car of data.cars) {
+            const { x, y, w, h, angle } = car;
+            const cosA = Math.cos(angle);
+            const sinA = Math.sin(angle);
+            const hw = w / 2;
+            const hh = h / 2;
+            const corners = [
+                { x: x + cosA * (-hw) - sinA * (-hh), y: y + sinA * (-hw) + cosA * (-hh) },
+                { x: x + cosA *   hw  - sinA * (-hh), y: y + sinA *   hw  + cosA * (-hh) },
+                { x: x + cosA *   hw  - sinA *   hh,  y: y + sinA *   hw  + cosA *   hh  },
+                { x: x + cosA * (-hw) - sinA *   hh,  y: y + sinA * (-hw) + cosA *   hh  },
+            ];
+            g.fillPoints(corners, true);
+            g.strokePoints(corners, true);
         }
     }
 }

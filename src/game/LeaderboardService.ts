@@ -2,6 +2,7 @@ export interface LeaderboardEntry {
     playerName: string;
     score: number;
     duration: number;
+    airTime: number;
 }
 
 export interface PlayerContext {
@@ -26,19 +27,29 @@ function hdrs(extra?: Record<string, string>): Record<string, string> {
     };
 }
 
-function toEntry(row: { player_name: string; score: number; duration: number }): LeaderboardEntry {
-    return { playerName: row.player_name, score: row.score, duration: row.duration };
+function toEntry(row: { player_name: string; score: number; duration: number; air_time?: number }): LeaderboardEntry {
+    return {
+        playerName: row.player_name,
+        score: row.score,
+        duration: row.duration,
+        airTime: row.air_time ?? 0,
+    };
 }
 
 export const LeaderboardService = {
     /**
      * Submits a new score to the global leaderboard.
      */
-    async submitScore(playerName: string, score: number, duration: number): Promise<void> {
+    async submitScore(playerName: string, score: number, duration: number, airTime: number): Promise<void> {
         const res = await fetch(BASE, {
             method: 'POST',
             headers: hdrs({ Prefer: 'return=minimal' }),
-            body: JSON.stringify({ player_name: playerName, score: Math.round(score), duration: Math.round(duration) }),
+            body: JSON.stringify({
+                player_name: playerName,
+                score: Math.round(score),
+                duration: Math.round(duration),
+                air_time: Math.round(airTime * 10) / 10,
+            }),
         });
         if (!res.ok) {
             const text = await res.text();
@@ -52,13 +63,13 @@ export const LeaderboardService = {
      */
     async getTopScores(limit = 10): Promise<LeaderboardEntry[]> {
         const res = await fetch(
-            `${BASE}?select=player_name,score,duration&order=score.desc,duration.desc&limit=${limit}`,
+            `${BASE}?select=player_name,score,duration,air_time&order=score.desc,duration.desc&limit=${limit}`,
             { headers: hdrs() },
         );
         if (!res.ok) {
             throw new Error(`LeaderboardService.getTopScores failed (${res.status})`);
         }
-        const rows: { player_name: string; score: number; duration: number }[] = await res.json();
+        const rows: { player_name: string; score: number; duration: number; air_time?: number }[] = await res.json();
         return rows.map(toEntry);
     },
 
@@ -67,7 +78,7 @@ export const LeaderboardService = {
      * Rank = (# of entries that beat this run under score DESC, duration DESC) + 1.
      * A tie on score is broken by duration: a longer run ranks higher.
      */
-    async getPlayerContext(playerName: string, score: number, duration: number): Promise<PlayerContext> {
+    async getPlayerContext(playerName: string, score: number, duration: number, airTime: number = 0): Promise<PlayerContext> {
         // Round to integers to match the int4 column type used in filter expressions
         const s = Math.round(score);
         const d = Math.round(duration);
@@ -82,11 +93,11 @@ export const LeaderboardService = {
                 headers: hdrs({ Prefer: 'count=exact' }),
             }),
             // Nearest entry above: the closest run that just beats this one
-            fetch(`${BASE}?select=player_name,score,duration&${beatsMe}&order=score.asc,duration.asc&limit=1`, {
+            fetch(`${BASE}?select=player_name,score,duration,air_time&${beatsMe}&order=score.asc,duration.asc&limit=1`, {
                 headers: hdrs(),
             }),
             // Nearest entry below: the closest run that this one just beats
-            fetch(`${BASE}?select=player_name,score,duration&${loseToMe}&order=score.desc,duration.desc&limit=1`, {
+            fetch(`${BASE}?select=player_name,score,duration,air_time&${loseToMe}&order=score.desc,duration.desc&limit=1`, {
                 headers: hdrs(),
             }),
         ]);
@@ -97,16 +108,16 @@ export const LeaderboardService = {
         const total = parseInt(totalStr, 10);
         const rank = isNaN(total) ? 1 : total + 1;
 
-        const aboveRows: { player_name: string; score: number; duration: number }[] =
+        const aboveRows: { player_name: string; score: number; duration: number; air_time?: number }[] =
             aboveRes.ok ? await aboveRes.json() : [];
-        const belowRows: { player_name: string; score: number; duration: number }[] =
+        const belowRows: { player_name: string; score: number; duration: number; air_time?: number }[] =
             belowRes.ok ? await belowRes.json() : [];
 
         return {
             rank,
             above: aboveRows[0] ? toEntry(aboveRows[0]) : null,
             below: belowRows[0] ? toEntry(belowRows[0]) : null,
-            myEntry: { playerName, score, duration },
+            myEntry: { playerName, score, duration, airTime },
         };
     },
 };

@@ -48,6 +48,12 @@ export class MatterCarController implements ICarController {
     tireMarkIntensity = 0;
     private brakeIntensity = 0;  // 0→1 ramp so handbrake effects ease in smoothly
 
+    // Air state (ramp jump)
+    isInAir = false;
+    private airTimer = 0;
+    private readonly jumpDuration = 0.85;
+    private isLanding = false;
+
     // Slip-angle physics state
     slipAngle = 0;
     gripLevel = 1.0;
@@ -315,6 +321,7 @@ export class MatterCarController implements ICarController {
             this.headAngle += this.angularVel * dt;
             this.updateCarSprite();
             this.wrapHeadSprite();
+            this.tickAirState(dt);
             return true;
         }
 
@@ -501,6 +508,7 @@ export class MatterCarController implements ICarController {
         // ---- SPRITE + WRAP ----
         this.updateCarSprite();
         this.wrapHeadSprite();
+        this.tickAirState(dt);
     }
 
     // ================================================================
@@ -549,6 +557,11 @@ export class MatterCarController implements ICarController {
         if (this.mBody) {
             this.mBody.frictionAir = 0.06;
         }
+        // Cancel any in-flight jump
+        this.isInAir = false;
+        this.airTimer = 0;
+        this.isLanding = false;
+        this.carSprite?.setScale(1, 1);
     }
 
     updateGameOver(dt: number) {
@@ -575,8 +588,51 @@ export class MatterCarController implements ICarController {
         this.carSprite.setTexture(frameKey);
         this.carSprite.setPosition(hx, hy);
         this.carShadow.setTexture(frameKey);
+
+        // Air state: animate shadow distance and car scale along a parabolic arc
+        let shadowExtraY = 0;
+        if (this.isInAir) {
+            const progress = Math.min(this.airTimer / this.jumpDuration, 1);
+            shadowExtraY = Math.sin(progress * Math.PI) * 28;
+            const scale = 1.0 + (shadowExtraY / 28) * 0.06;
+            this.carSprite.setScale(scale, scale);
+        } else if (!this.isLanding) {
+            this.carSprite.setScale(1, 1);
+        }
+
         this.carShadow.setScale(0.95, 1);
-        this.carShadow.setPosition(hx + 4, hy + 58);
+        this.carShadow.setPosition(hx + 4, hy + 58 + shadowExtraY);
+    }
+
+    // ================================================================
+    //  JUMP / AIR STATE
+    // ================================================================
+
+    startJump() {
+        if (this.isInAir || this.isLanding) return;
+        this.isInAir = true;
+        this.airTimer = 0;
+    }
+
+    private tickAirState(dt: number) {
+        if (!this.isInAir) return;
+        this.airTimer += dt;
+        if (this.airTimer >= this.jumpDuration) {
+            this.isInAir = false;
+            this.isLanding = true;
+            this.scene.tweens.add({
+                targets: this.carSprite,
+                scaleX: 1.14,
+                scaleY: 0.86,
+                duration: 75,
+                ease: 'Quad.easeOut',
+                yoyo: true,
+                onComplete: () => {
+                    this.carSprite.setScale(1, 1);
+                    this.isLanding = false;
+                },
+            });
+        }
     }
 
     // ================================================================
@@ -597,6 +653,10 @@ export class MatterCarController implements ICarController {
         this.gripRecoveryTimer = 1.0;
         this.driftSign       = 0;
         this.driftSignCooldown = 0;
+        this.isInAir         = false;
+        this.airTimer        = 0;
+        this.isLanding       = false;
+        this.carSprite?.setScale(1, 1);
 
         (this.headSprite as any).setPosition(x, y);
         this.setVelocity(0, 0);

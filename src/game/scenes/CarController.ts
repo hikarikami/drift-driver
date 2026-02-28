@@ -62,6 +62,10 @@ export interface ICarController {
     drag: number;
     maxSpeed: number;
 
+    // Jump / air state
+    isInAir: boolean;
+    startJump(): void;
+
     // Methods
     readInput(): CarInput;
     setRemoteInput(input: CarInput): void;
@@ -120,6 +124,12 @@ export class CarController implements ICarController {
     boostIntensity = 0;
     boostBarDisplay: number;
     tireMarkIntensity = 0;
+
+    // === AIR STATE (ramp jump) ===
+    isInAir = false;
+    private airTimer = 0;
+    private readonly jumpDuration = 0.85;
+    private isLanding = false;
 
     // Slip-angle physics state
     slipAngle = 35;
@@ -382,6 +392,7 @@ export class CarController implements ICarController {
             this.headAngle += this.angularVel * dt;
             this.updateCarSprite();
             this.wrapHeadSprite();
+            this.tickAirState(dt);
             return true;
         }
 
@@ -535,6 +546,7 @@ export class CarController implements ICarController {
         // ---- SPRITE + WRAP ----
         this.updateCarSprite();
         this.wrapHeadSprite();
+        this.tickAirState(dt);
     }
 
     // ================================================================
@@ -597,6 +609,17 @@ export class CarController implements ICarController {
         this.updateCarSprite();
     }
 
+    initGameOver() {
+        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
+        body.setAcceleration(0, 0);
+        body.setDrag(400, 400);
+        // Cancel any in-flight jump
+        this.isInAir = false;
+        this.airTimer = 0;
+        this.isLanding = false;
+        this.carSprite.setScale(1, 1);
+    }
+
     // ================================================================
     //  SPRITE
     // ================================================================
@@ -611,8 +634,52 @@ export class CarController implements ICarController {
         this.carSprite.setTexture(frameKey);
         this.carSprite.setPosition(hx, hy);
         this.carShadow.setTexture(frameKey);
+
+        // Air state: animate shadow distance and car scale along a parabolic arc
+        let shadowExtraY = 0;
+        if (this.isInAir) {
+            const progress = Math.min(this.airTimer / this.jumpDuration, 1);
+            shadowExtraY = Math.sin(progress * Math.PI) * 28;
+            const scale = 1.0 + (shadowExtraY / 28) * 0.06;
+            this.carSprite.setScale(scale, scale);
+        } else if (!this.isLanding) {
+            this.carSprite.setScale(1, 1);
+        }
+
         this.carShadow.setScale(0.95, 1);
-        this.carShadow.setPosition(hx + 4, hy + 58);
+        this.carShadow.setPosition(hx + 4, hy + 58 + shadowExtraY);
+    }
+
+    // ================================================================
+    //  JUMP / AIR STATE
+    // ================================================================
+
+    startJump() {
+        if (this.isInAir || this.isLanding) return;
+        this.isInAir = true;
+        this.airTimer = 0;
+    }
+
+    private tickAirState(dt: number) {
+        if (!this.isInAir) return;
+        this.airTimer += dt;
+        if (this.airTimer >= this.jumpDuration) {
+            this.isInAir = false;
+            this.isLanding = true;
+            // Landing squash-and-stretch bounce
+            this.scene.tweens.add({
+                targets: this.carSprite,
+                scaleX: 1.14,
+                scaleY: 0.86,
+                duration: 75,
+                ease: 'Quad.easeOut',
+                yoyo: true,
+                onComplete: () => {
+                    this.carSprite.setScale(1, 1);
+                    this.isLanding = false;
+                },
+            });
+        }
     }
 
     // ================================================================
@@ -627,6 +694,10 @@ export class CarController implements ICarController {
         this.boostBarDisplay = this.boostMax;
         this.tireMarkIntensity = 0;
         this.isAccelerating = false;
+        this.isInAir = false;
+        this.airTimer = 0;
+        this.isLanding = false;
+        this.carSprite?.setScale(1, 1);
 
         this.slipAngle = 0;
         this.gripLevel = 1.0;
@@ -643,14 +714,8 @@ export class CarController implements ICarController {
     }
 
     // ================================================================
-    //  GAME-OVER INIT (called once) + PHYSICS TOGGLE
+    //  PHYSICS TOGGLE
     // ================================================================
-
-    initGameOver() {
-        const body = this.headSprite.body as Phaser.Physics.Arcade.Body;
-        body.setAcceleration(0, 0);
-        body.setDrag(400, 400);
-    }
 
     setPhysicsEnabled(enabled: boolean) {
         const body = this.headSprite.body as Phaser.Physics.Arcade.Body;

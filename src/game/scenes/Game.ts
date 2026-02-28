@@ -11,7 +11,7 @@ import { PickupArrow } from './PickupArrow';
 import { TouchControls } from '../TouchControls';
 import {
     GameSessionConfig, GameMode, PlayerConfig,
-    createSinglePlayerConfig, PHYSICS_ENGINE,
+    createSinglePlayerConfig, PHYSICS_ENGINE, JUMP_SCORE_BONUS,
 } from './GameConfig';
 import {
     getNetworkManager, destroyNetworkManager,
@@ -25,10 +25,12 @@ interface PlayerState {
     car: ICarController;
     particles: ParticleEffects;
     score: number;
+    airTime: number;             // cumulative seconds spent in the air this run
     lastCollisionTime: number;
     crashSoundPlays: number;
     crashSoundCooldownUntil: number;
     accelStopTimer: number;
+    isOnRamp: boolean[];         // per-ramp: was car in this ramp zone last frame?
 }
 
 export class Game extends Scene {
@@ -70,6 +72,10 @@ export class Game extends Scene {
     private crashSound1!: Phaser.Sound.BaseSound;
     private crashSound2!: Phaser.Sound.BaseSound;
     private crashSound3!: Phaser.Sound.BaseSound;
+    private jumpSoundCar!: Phaser.Sound.BaseSound;         // cardoor.mp3    —   0 ms
+    private jumpSoundRocks!: Phaser.Sound.BaseSound;       // rocks-smash.mp3 — 100 ms (half vol)
+    private jumpSoundDirt!: Phaser.Sound.BaseSound;        // dirt-sound.mp3  — 150 ms
+    private jumpSoundCrunch!: Phaser.Sound.BaseSound;      // crunch.mp3      — 250 ms
 
     // Network (online mode only)
     private networkRole: 'host' | 'guest' | 'none' = 'none';
@@ -113,10 +119,12 @@ export class Game extends Scene {
             this.sceneryData = generatedScenery;
         }
 
-        // [Matter only] build static obstacle bodies from SceneryManager's hitbox geometry.
+        // [Matter only] build static obstacle and ramp bodies from SceneryManager geometry.
         // Must be called here (inside the Scene) so this.matter is available.
         if (PHYSICS_ENGINE === 'matter') {
             this.buildMatterObstacles();
+            // Ramp hit detection is handled by manual AABB proximity check in
+            // updatePlayer, so Matter sensor bodies for ramps are not needed.
         }
 
         // --- Canvas focus ---
@@ -151,7 +159,7 @@ export class Game extends Scene {
 
         // --- Input ---
         const keyboard = this.input.keyboard;
-        keyboard?.on('keydown-R', () => this.tryRestart());
+        keyboard?.on('keydown-U', () => this.tryRestart());
         keyboard?.on('keydown-ESC', () => this.backToMenu());
 
         this.input.on('pointerdown', () => {
@@ -178,6 +186,20 @@ export class Game extends Scene {
                     this.endGame();
                 }
             },
+            getHitboxData: () => ({
+                obstacles: this.scenery.obstacleHitboxData,
+                ramps:     this.scenery.rampHitboxData,
+                pickup: (this.pickup.pickupX != null && !isNaN(this.pickup.pickupX))
+                    ? { x: this.pickup.pickupX, y: this.pickup.pickupY, radius: this.pickup.pickupCollectDist }
+                    : null,
+                cars: this.players.map(p => ({
+                    x: p.car.headSprite.x,
+                    y: p.car.headSprite.y,
+                    w: p.car.hitboxWidth,
+                    h: p.car.hitboxHeight,
+                    angle: p.car.headAngle,
+                })),
+            }),
         });
 
         // --- Collisions (host and local only — guest doesn't run physics) ---
@@ -187,6 +209,7 @@ export class Game extends Scene {
             if (PHYSICS_ENGINE === 'matter') {
                 // Matter: listen to collision events
                 this.matter.world.on('collisionstart', (event: any) => {
+                    if (this.gameOver) return;
                     for (const pair of event.pairs) {
                         const { bodyA, bodyB } = pair;
                         for (const player of this.players) {
@@ -220,6 +243,7 @@ export class Game extends Scene {
                         this.scenery.obstacleHitboxes,
                         (_car: any, obstacle: any) => this.handlePlayerCollision(player, obstacle)
                     );
+                    // Ramp hits are detected by manual AABB proximity in updatePlayer.
                 }
 
                 if ((this.mode === 'battle' || this.mode === 'online') && this.players.length >= 2) {
@@ -313,6 +337,19 @@ export class Game extends Scene {
         }
     }
 
+    private buildMatterRamps() {
+        for (let i = 0; i < this.scenery.rampHitboxData.length; i++) {
+            const hb = this.scenery.rampHitboxData[i];
+            const body = this.matter.add.rectangle(hb.x, hb.y, hb.w, hb.h, {
+                isStatic: true,
+                isSensor: true,     // pass-through: no physical collision response
+                label: `ramp_${i}`,
+                frictionAir: 0,
+            } as any);
+            this.scenery.matterRamps.push(body);
+        }
+    }
+
     // ========== PLAYER FACTORY ==========
 
     private createPlayer(config: PlayerConfig): PlayerState {
@@ -381,10 +418,12 @@ export class Game extends Scene {
             car,
             particles,
             score: 0,
+            airTime: 0,
             lastCollisionTime: 0,
             crashSoundPlays: 0,
             crashSoundCooldownUntil: 0,
             accelStopTimer: 0,
+            isOnRamp: [],
         };
     }
 
@@ -401,6 +440,10 @@ export class Game extends Scene {
         this.crashSound1 = this.sound.add('crash-1');
         this.crashSound2 = this.sound.add('crash-2');
         this.crashSound3 = this.sound.add('crash-3');
+        this.jumpSoundCar    = this.sound.add('jump-cardoor');
+        this.jumpSoundRocks  = this.sound.add('jump-rocks-smash');
+        this.jumpSoundDirt   = this.sound.add('jump-dirt');
+        this.jumpSoundCrunch = this.sound.add('jump-crunch');
 
         this.music.play({ volume: this.musicVolume });
     }
@@ -632,6 +675,7 @@ export class Game extends Scene {
     // ========== COLLISION ==========
 
     private handlePlayerCollision(player: PlayerState, obstacle: any) {
+        if (this.gameOver) return;
         const now = this.time.now;
         if (now - player.lastCollisionTime < this.collisionCooldown) return;
         player.lastCollisionTime = now;
@@ -693,6 +737,43 @@ export class Game extends Scene {
                 this.pvpCrashSoundPlays = 0;
             }
         }
+    }
+
+    // ========== RAMP HIT ==========
+    // Called by updatePlayer exactly once per ramp-entry (isOnRamp tracking guarantees
+    // this fires only on the frame the car transitions from outside → inside the zone).
+
+    private handleRampHit(player: PlayerState, rampIndex: number) {
+        if (this.gameOver) return;
+
+        player.car.startJump();
+        player.score += JUMP_SCORE_BONUS;
+        if (!(this.jumpSoundCar as any).isPlaying) {
+            this.jumpSoundCar.play({ volume: 0.7 });
+        }
+        this.time.delayedCall(100, () => {
+            if (!(this.jumpSoundRocks as any).isPlaying) {
+                this.jumpSoundRocks.play({ volume: 0.80 });
+            }
+        });
+        this.time.delayedCall(150, () => {
+            if (!(this.jumpSoundDirt as any).isPlaying) {
+                this.jumpSoundDirt.play({ volume: 0.6 });
+            }
+        });
+        this.time.delayedCall(350, () => {
+            if (!(this.jumpSoundCrunch as any).isPlaying) {
+                this.jumpSoundCrunch.play({ volume: 0.65 });
+            }
+        });
+
+        const hb = this.scenery.rampHitboxData[rampIndex];
+        const popX = hb ? hb.x : player.car.headSprite.x;
+        const popY = hb ? hb.y : player.car.headSprite.y;
+        this.ui.showJumpBonusPopup(popX, popY, JUMP_SCORE_BONUS);
+        this.time.delayedCall(300, () => {
+            this.ui.showAirTimePopup(popX, popY + 22);
+        });
     }
 
     // ========== UPDATE LOOP ==========
@@ -794,11 +875,38 @@ export class Game extends Scene {
         // --- Input ---
         const input = car.readInput();
 
-        // --- Reverse ---
-        if (car.updateReverse(dt, input)) return;
+        // Track airtime before update (isInAir may change inside the update)
+        const wasInAir = car.isInAir;
 
-        // --- Forward physics ---
-        car.updateForward(dt, input);
+        // Suppress handbrake while airborne — no grip on the ground to brake against
+        if (car.isInAir) input.brakeInput = false;
+
+        // --- Physics (reverse takes priority; returns true when car is reversing) ---
+        const isReversing = car.updateReverse(dt, input);
+        if (!isReversing) {
+            car.updateForward(dt, input);
+        }
+
+        if (wasInAir) player.airTime += dt;
+
+        // --- Ramp proximity detection (manual AABB, runs regardless of direction) ---
+        // Using enter/exit state (isOnRamp) guarantees handleRampHit fires exactly once
+        // per crossing, avoiding the every-frame firing of Matter sensor / Arcade overlap.
+        {
+            const cx = car.headSprite.x as number;
+            const cy = car.headSprite.y as number;
+            for (let ri = 0; ri < this.scenery.rampHitboxData.length; ri++) {
+                const hb = this.scenery.rampHitboxData[ri];
+                const inZone = Math.abs(cx - hb.x) < hb.w / 2 + 6 &&
+                               Math.abs(cy - hb.y) < hb.h / 2 + 6;
+                if (inZone && !player.isOnRamp[ri]) {
+                    this.handleRampHit(player, ri);
+                }
+                player.isOnRamp[ri] = inZone;
+            }
+        }
+
+        if (isReversing) return;
 
         // --- Particles ---
         player.particles.update(car, input.brakeInput);
@@ -834,6 +942,7 @@ export class Game extends Scene {
     private updateSound(player: PlayerState, dt: number) {
         const car = player.car;
         const input = car.readInput(); // Re-read for sound — cheap since keys are cached
+        if (car.isInAir) input.brakeInput = false;
 
         const brakeScreech = input.brakeInput ? 0.15 : 0;
         this.soundManager.setLayerTarget('screech', Math.max(car.tireMarkIntensity, brakeScreech));
@@ -889,6 +998,7 @@ export class Game extends Scene {
                 this.ui.showGameOverUI(
                     p1.score,
                     runDuration,
+                    p1.airTime,
                     playerName,
                     () => this.tryRestart(),
                     () => this.backToMenu()
@@ -902,11 +1012,15 @@ export class Game extends Scene {
     }
 
     private tryRestart() {
-        // Restart same mode
+        // Cancel any in-flight async game-over UI before the scene is torn down.
+        // Without this, showGameOverUI's leaderboard await can resume on the new
+        // game scene and inject stale overlay objects into the running game.
+        this.ui.cleanupGameOver();
         this.scene.restart({ sessionConfig: this.sessionConfig });
     }
 
     private backToMenu() {
+        this.ui.cleanupGameOver();
         // Stop all audio before switching scenes
         if (this.music?.isPlaying) this.music.stop();
         if (this.soundManager) this.soundManager.stopAll();
