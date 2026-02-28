@@ -1,5 +1,6 @@
 import { Scene } from 'phaser';
 import { HighScoreManager } from '../HighScoreManager';
+import { LeaderboardService, LeaderboardEntry, PlayerContext } from '../LeaderboardService';
 
 function formatTime(seconds: number): string {
     const m = Math.floor(seconds / 60);
@@ -25,6 +26,7 @@ export class UIManager {
     private menuBtn?: Phaser.GameObjects.Text;
     private resultElements: Phaser.GameObjects.GameObject[] = [];
     private dimOverlay?: Phaser.GameObjects.Graphics;
+    private _gameOverActive = false;
 
     constructor(scene: Scene, width: number, height: number) {
         this.scene = scene;
@@ -225,31 +227,39 @@ export class UIManager {
     }
 
     /**
-     * Shows the single-player game over UI with top-5 high score leaderboard.
+     * Shows the single-player game over UI with global leaderboard.
+     * Saves locally as a fallback, then attempts an async online submission + fetch.
      */
-    showGameOverUI(
+    async showGameOverUI(
         score: number,
         duration: number,
         playerName: string,
         onRestart: () => void,
         onMenu: () => void
     ) {
+        this._gameOverActive = true;
         this.timerText.setVisible(false);
 
-        // Save score — returns 1-based rank if it placed, null otherwise
-        const rank = HighScoreManager.saveScore(playerName, score, duration);
-        const topScores = HighScoreManager.getTopScores();
+        // Always persist locally first (offline fallback)
+        const localRank  = HighScoreManager.saveScore(playerName, score, duration);
+        const localScores = HighScoreManager.getTopScores();
 
         // ── Layout anchors ──────────────────────────────────────────────────
         const cx = this.width / 2;
-        const titleY   = this.height * 0.22;
-        const nameY    = this.height * 0.30;
-        const scoreY   = this.height * 0.36;
-        const badgeY   = this.height * 0.42;
-        const tableTop = this.height * 0.47;
-        const btnY     = this.height * 0.82;
+        const titleY   = this.height * 0.09;
+        const nameY    = this.height * 0.15;
+        const scoreY   = this.height * 0.21;
+        const badgeY   = this.height * 0.26;
+        const tableTop = this.height * 0.31;
+        const btnY     = this.height * 0.88;
 
-        // ── GAME OVER title (reposition from its default center-screen Y) ──
+        // Pre-compute top-5 card bottom so context card can sit right below it
+        const TOP5_PANEL_H  = 14 * 2 + 5 * 46 + 10; // 268 px
+        const top5CardTop   = tableTop + 24;
+        const top5CardBot   = top5CardTop + TOP5_PANEL_H;
+        const ctxHeaderY    = top5CardBot + 20;
+
+        // ── GAME OVER title ──────────────────────────────────────────────────
         this.gameOverText.setY(titleY);
         this.gameOverText.setText('GAME OVER');
         this.gameOverText.setAlpha(0).setScale(0.5).setVisible(true);
@@ -270,7 +280,7 @@ export class UIManager {
         this.scene.tweens.add({ targets: nameLabel, alpha: 1, duration: 400, delay: 150 });
         this.resultElements.push(nameLabel);
 
-        // ── This run: score + time ────────────────────────────────────────────
+        // ── Score + time ─────────────────────────────────────────────────────
         this.finalScoreText = this.scene.add.text(
             cx, scoreY,
             `Score: ${score.toLocaleString()}   •   Run Time: ${formatTime(duration)}`,
@@ -285,9 +295,81 @@ export class UIManager {
         ).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
         this.scene.tweens.add({ targets: this.finalScoreText, alpha: 1, duration: 400, delay: 250 });
 
-        // ── Rank badge ────────────────────────────────────────────────────────
+        // ── Loading placeholder in the table area ────────────────────────────
+        const loadingText = this.scene.add.text(cx, tableTop + 80, 'Loading leaderboard...', {
+            fontFamily: 'BoldPixels',
+            fontSize: 22,
+            color: '#777777',
+            stroke: '#000000',
+            strokeThickness: 3,
+            align: 'center',
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+        this.scene.tweens.add({ targets: loadingText, alpha: 1, duration: 300, delay: 400 });
+        this.resultElements.push(loadingText);
+
+        // ── Buttons (shown immediately, no need to wait for leaderboard) ─────
+        this.playAgainBtn = this.createOverlayButton(
+            cx - 130, btnY, 'Play Again', '#33aa55', '#44cc66', onRestart, 700
+        );
+        this.menuBtn = this.createOverlayButton(
+            cx + 130, btnY, 'Main Menu', '#555555', '#777777', onMenu, 800
+        );
+
+        // Helper to cleanly destroy the loading text (called exactly once)
+        let loadDismissed = false;
+        const dismissLoading = () => {
+            if (loadDismissed) return;
+            loadDismissed = true;
+            const idx = this.resultElements.indexOf(loadingText);
+            if (idx >= 0) this.resultElements.splice(idx, 1);
+            loadingText.destroy();
+        };
+
+        // ── Online leaderboard ───────────────────────────────────────────────
+        try {
+            await LeaderboardService.submitScore(playerName, score, duration);
+            if (!this._gameOverActive) return;
+
+            const [topScores, playerContext] = await Promise.all([
+                LeaderboardService.getTopScores(5),
+                LeaderboardService.getPlayerContext(playerName, score, duration),
+            ]);
+            if (!this._gameOverActive) return;
+
+            dismissLoading();
+            this.buildScoreTable(cx, tableTop, topScores, playerContext.rank, score, true, playerName);
+            this.showRankBadge(cx, badgeY, playerContext.rank);
+
+            if (playerContext.rank > 5) {
+                this.buildPlayerContextCard(cx, ctxHeaderY, playerContext);
+            }
+        } catch (err) {
+            console.warn('[Leaderboard] Online unavailable, using local scores:', err);
+            if (!this._gameOverActive) return;
+
+            dismissLoading();
+
+            // Small "(offline)" label above the table header
+            const offlineNote = this.scene.add.text(cx, tableTop - 4, '(offline)', {
+                fontFamily: 'BoldPixels',
+                fontSize: 14,
+                color: '#555555',
+                stroke: '#000000',
+                strokeThickness: 2,
+                align: 'center',
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(10);
+            this.resultElements.push(offlineNote);
+
+            this.buildScoreTable(cx, tableTop + 18, localScores, localRank, score, false, playerName);
+            this.showRankBadge(cx, badgeY, localRank);
+        }
+    }
+
+    private showRankBadge(cx: number, y: number, rank: number | null) {
+        if (rank === null) return;
+
         if (rank === 1) {
-            const badge = this.scene.add.text(cx, badgeY, '★  NEW HIGH SCORE!  ★', {
+            const badge = this.scene.add.text(cx, y, '★  NEW HIGH SCORE!  ★', {
                 fontFamily: 'BoldPixels',
                 fontSize: 26,
                 color: '#ffdd44',
@@ -295,10 +377,11 @@ export class UIManager {
                 strokeThickness: 4,
                 align: 'center',
             }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0).setScale(0.6);
-            this.scene.tweens.add({ targets: badge, alpha: 1, scale: 1, duration: 500, delay: 400, ease: 'Back.easeOut' });
+            this.scene.tweens.add({ targets: badge, alpha: 1, scale: 1, duration: 500, ease: 'Back.easeOut' });
             this.resultElements.push(badge);
-        } else if (rank !== null) {
-            const badge = this.scene.add.text(cx, badgeY, `#${rank} All-Time`, {
+        } else {
+            const label = rank <= 5 ? `#${rank} All-Time` : `Global Rank  #${rank}`;
+            const badge = this.scene.add.text(cx, y, label, {
                 fontFamily: 'BoldPixels',
                 fontSize: 22,
                 color: '#aaddff',
@@ -306,28 +389,19 @@ export class UIManager {
                 strokeThickness: 4,
                 align: 'center',
             }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
-            this.scene.tweens.add({ targets: badge, alpha: 1, duration: 400, delay: 400 });
+            this.scene.tweens.add({ targets: badge, alpha: 1, duration: 400 });
             this.resultElements.push(badge);
         }
-
-        // ── Top-5 leaderboard card ────────────────────────────────────────────
-        this.buildScoreTable(cx, tableTop, topScores, rank, score);
-
-        // ── Buttons ──────────────────────────────────────────────────────────
-        this.playAgainBtn = this.createOverlayButton(
-            cx - 130, btnY, 'Play Again', '#33aa55', '#44cc66', onRestart, 700
-        );
-        this.menuBtn = this.createOverlayButton(
-            cx + 130, btnY, 'Main Menu', '#555555', '#777777', onMenu, 800
-        );
     }
 
     private buildScoreTable(
         cx: number,
         topY: number,
-        entries: import('../HighScoreManager').HighScoreEntry[],
+        entries: LeaderboardEntry[],
         thisRunRank: number | null,
-        thisRunScore: number
+        thisRunScore: number,
+        isOnline: boolean,
+        thisRunPlayerName: string
     ) {
         const ROW_H   = 46;
         const ROWS    = 5;
@@ -337,8 +411,10 @@ export class UIManager {
         const panelH  = PAD_Y * 2 + ROWS * ROW_H + 10;
         const panelX  = cx - panelW / 2;
 
+        const headerLabel = isOnline ? 'GLOBAL TOP 5' : 'TOP 5 SCORES';
+
         // Section header
-        const header = this.scene.add.text(cx, topY, 'TOP 5 SCORES', {
+        const header = this.scene.add.text(cx, topY, headerLabel, {
             fontFamily: 'BoldPixels',
             fontSize: 18,
             color: '#fafafa',
@@ -368,7 +444,10 @@ export class UIManager {
         for (let i = 0; i < ROWS; i++) {
             const rowY = cardTop + PAD_Y + i * ROW_H + ROW_H / 2;
             const entry = entries[i];
-            const isThisRun = thisRunRank !== null && (i + 1) === thisRunRank && entry?.score === thisRunScore;
+            const isThisRun = thisRunRank !== null
+                && (i + 1) === thisRunRank
+                && entry?.score === thisRunScore
+                && entry?.playerName === thisRunPlayerName;
             const delay = 650 + i * 60;
 
             if (isThisRun) {
@@ -454,6 +533,109 @@ export class UIManager {
             this.scene.tweens.add({ targets: timeLabel, alpha: 1, duration: 300, delay });
             this.resultElements.push(timeLabel);
         }
+    }
+
+    /**
+     * Draws the "Your Position" card below the top-5 table.
+     * Shows the nearest entry above, the player's own entry, and the nearest entry below.
+     */
+    private buildPlayerContextCard(cx: number, topY: number, context: PlayerContext) {
+        const ROW_H  = 46;
+        const PAD_X  = 36;
+        const PAD_Y  = 14;
+        const panelW = 560;
+        const panelH = PAD_Y * 2 + 3 * ROW_H + 10;
+        const panelX = cx - panelW / 2;
+
+        const header = this.scene.add.text(cx, topY, 'YOUR POSITION', {
+            fontFamily: 'BoldPixels',
+            fontSize: 18,
+            color: '#fafafa',
+            align: 'center',
+            letterSpacing: 4,
+            stroke: '#000000',
+            strokeThickness: 4,
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+        this.scene.tweens.add({ targets: header, alpha: 1, duration: 300, delay: 800 });
+        this.resultElements.push(header);
+
+        const cardTop = topY + 24;
+
+        const card = this.scene.add.graphics().setScrollFactor(0).setDepth(9).setAlpha(0);
+        card.fillStyle(0x000000, 0.55);
+        card.fillRoundedRect(panelX, cardTop, panelW, panelH, 10);
+        card.lineStyle(1, 0x444444, 0.8);
+        card.strokeRoundedRect(panelX, cardTop, panelW, panelH, 10);
+        this.scene.tweens.add({ targets: card, alpha: 1, duration: 300, delay: 850 });
+        this.resultElements.push(card);
+
+        const rows: { entry: LeaderboardEntry | null; rank: number; isPlayer: boolean }[] = [
+            { entry: context.above,   rank: context.rank - 1, isPlayer: false },
+            { entry: context.myEntry, rank: context.rank,     isPlayer: true  },
+            { entry: context.below,   rank: context.rank + 1, isPlayer: false },
+        ];
+
+        rows.forEach(({ entry, rank, isPlayer }, i) => {
+            const rowY = cardTop + PAD_Y + i * ROW_H + ROW_H / 2;
+            const delay = 900 + i * 60;
+
+            if (isPlayer) {
+                const highlight = this.scene.add.graphics().setScrollFactor(0).setDepth(9).setAlpha(0);
+                highlight.fillStyle(0xffffff, 0.07);
+                highlight.fillRoundedRect(panelX + 4, rowY - ROW_H / 2 + 2, panelW - 8, ROW_H - 4, 6);
+                this.scene.tweens.add({ targets: highlight, alpha: 1, duration: 300, delay });
+                this.resultElements.push(highlight);
+
+                const arrow = this.scene.add.text(panelX + PAD_X - 6, rowY, '►', {
+                    fontFamily: 'BoldPixels', fontSize: 16, color: '#ffcc66',
+                }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+                this.scene.tweens.add({ targets: arrow, alpha: 1, duration: 300, delay });
+                this.resultElements.push(arrow);
+            }
+
+            // Rank number
+            const rankLabel = this.scene.add.text(
+                panelX + PAD_X, rowY,
+                `#${rank}`,
+                { fontFamily: 'BoldPixels', fontSize: 21, color: isPlayer ? '#ffcc66' : '#888888' }
+            ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: rankLabel, alpha: 1, duration: 300, delay });
+            this.resultElements.push(rankLabel);
+
+            if (!entry) {
+                const dash = this.scene.add.text(
+                    panelX + PAD_X + 60, rowY, '—',
+                    { fontFamily: 'BoldPixels', fontSize: 18, color: '#444444' }
+                ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+                this.scene.tweens.add({ targets: dash, alpha: 1, duration: 300, delay });
+                this.resultElements.push(dash);
+                return;
+            }
+
+            const nameText = this.scene.add.text(
+                panelX + PAD_X + 70, rowY,
+                entry.playerName,
+                { fontFamily: 'BoldPixels', fontSize: 18, color: isPlayer ? '#ffcc66' : '#999999' }
+            ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: nameText, alpha: 1, duration: 300, delay });
+            this.resultElements.push(nameText);
+
+            const scoreText = this.scene.add.text(
+                panelX + panelW - PAD_X - 100, rowY,
+                entry.score.toLocaleString(),
+                { fontFamily: 'BoldPixels', fontSize: 20, color: isPlayer ? '#ffffff' : '#cccccc' }
+            ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: scoreText, alpha: 1, duration: 300, delay });
+            this.resultElements.push(scoreText);
+
+            const timeText = this.scene.add.text(
+                panelX + panelW - PAD_X, rowY,
+                formatTime(entry.duration),
+                { fontFamily: 'BoldPixels', fontSize: 16, color: isPlayer ? '#aaddff' : '#777777' }
+            ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: timeText, alpha: 1, duration: 300, delay });
+            this.resultElements.push(timeText);
+        });
     }
 
     /**
@@ -561,6 +743,7 @@ export class UIManager {
      * Cleans up game over overlay for restart
      */
     cleanupGameOver() {
+        this._gameOverActive = false;
         this.gameOverText.setVisible(false);
         this.timerText.setVisible(true);
         if (this.finalScoreText) { this.finalScoreText.destroy(); this.finalScoreText = undefined; }
