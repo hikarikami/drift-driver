@@ -27,6 +27,8 @@ export class UIManager {
     private resultElements: Phaser.GameObjects.GameObject[] = [];
     private dimOverlay?: Phaser.GameObjects.Graphics;
     private _gameOverActive = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private _wheelHandler?: (...args: any[]) => void;
 
     constructor(scene: Scene, width: number, height: number) {
         this.scene = scene;
@@ -331,7 +333,7 @@ export class UIManager {
             if (!this._gameOverActive) return;
 
             const [topScores, playerContext] = await Promise.all([
-                LeaderboardService.getTopScores(5),
+                LeaderboardService.getTopScores(10),
                 LeaderboardService.getPlayerContext(playerName, score, duration),
             ]);
             if (!this._gameOverActive) return;
@@ -340,7 +342,7 @@ export class UIManager {
             this.buildScoreTable(cx, tableTop, topScores, playerContext.rank, score, true, playerName);
             this.showRankBadge(cx, badgeY, playerContext.rank);
 
-            if (playerContext.rank > 5) {
+            if (playerContext.rank > 10) {
                 this.buildPlayerContextCard(cx, ctxHeaderY, playerContext);
             }
         } catch (err) {
@@ -380,7 +382,7 @@ export class UIManager {
             this.scene.tweens.add({ targets: badge, alpha: 1, scale: 1, duration: 500, ease: 'Back.easeOut' });
             this.resultElements.push(badge);
         } else {
-            const label = rank <= 5 ? `#${rank} All-Time` : `Global Rank  #${rank}`;
+            const label = rank <= 10 ? `#${rank} All-Time` : `Global Rank  #${rank}`;
             const badge = this.scene.add.text(cx, y, label, {
                 fontFamily: 'BoldPixels',
                 fontSize: 22,
@@ -403,15 +405,26 @@ export class UIManager {
         isOnline: boolean,
         thisRunPlayerName: string
     ) {
-        const ROW_H   = 46;
-        const ROWS    = 5;
-        const PAD_X   = 36;
-        const PAD_Y   = 14;
-        const panelW  = 560;
-        const panelH  = PAD_Y * 2 + ROWS * ROW_H + 10;
-        const panelX  = cx - panelW / 2;
+        const ROW_H        = 46;
+        const VISIBLE_ROWS = 5;
+        const PAD_X        = 36;
+        const PAD_Y        = 14;
+        const panelW       = 560;
+        const panelH       = PAD_Y * 2 + VISIBLE_ROWS * ROW_H + 10;
+        const panelX       = cx - panelW / 2;
+        const totalEntries = entries.length;
+        const maxScroll    = Math.max(0, totalEntries - VISIBLE_ROWS);
 
-        const headerLabel = isOnline ? 'GLOBAL TOP 5' : 'TOP 5 SCORES';
+        const rankColors = [
+            '#ffd700', '#c0c0c0', '#cd7f32', '#aaaaaa', '#888888',
+            '#777777', '#666666', '#666666', '#555555', '#555555',
+        ];
+        const rankLabels = [
+            '1st', '2nd', '3rd', '4th', '5th',
+            '6th', '7th', '8th', '9th', '10th',
+        ];
+
+        const headerLabel = isOnline ? 'GLOBAL TOP 10' : 'TOP 10 SCORES';
 
         // Section header
         const header = this.scene.add.text(cx, topY, headerLabel, {
@@ -422,14 +435,13 @@ export class UIManager {
             letterSpacing: 4,
             stroke: '#000000',
             strokeThickness: 4,
-
         }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
         this.scene.tweens.add({ targets: header, alpha: 1, duration: 300, delay: 550 });
         this.resultElements.push(header);
 
         const cardTop = topY + 24;
 
-        // Dark card background
+        // Dark card background — always sized for 5 visible rows
         const card = this.scene.add.graphics().setScrollFactor(0).setDepth(9).setAlpha(0);
         card.fillStyle(0x000000, 0.55);
         card.fillRoundedRect(panelX, cardTop, panelW, panelH, 10);
@@ -438,100 +450,156 @@ export class UIManager {
         this.scene.tweens.add({ targets: card, alpha: 1, duration: 300, delay: 600 });
         this.resultElements.push(card);
 
-        const rankColors = ['#ffd700', '#c0c0c0', '#cd7f32', '#aaaaaa', '#888888'];
-        const rankLabels = ['1st', '2nd', '3rd', '4th', '5th'];
+        // ── Build 5 reusable row slots ────────────────────────────────────────
+        type RowSlot = {
+            highlight: Phaser.GameObjects.Graphics;
+            rankTxt:   Phaser.GameObjects.Text;
+            starTxt:   Phaser.GameObjects.Text;
+            nameTxt:   Phaser.GameObjects.Text;
+            scoreTxt:  Phaser.GameObjects.Text;
+            timeTxt:   Phaser.GameObjects.Text;
+            rowY:      number;
+        };
 
-        for (let i = 0; i < ROWS; i++) {
-            const rowY = cardTop + PAD_Y + i * ROW_H + ROW_H / 2;
-            const entry = entries[i];
-            const isThisRun = thisRunRank !== null
-                && (i + 1) === thisRunRank
-                && entry?.score === thisRunScore
-                && entry?.playerName === thisRunPlayerName;
-            const delay = 650 + i * 60;
+        const slots: RowSlot[] = [];
 
-            if (isThisRun) {
-                // Highlight strip for current run
-                const highlight = this.scene.add.graphics().setScrollFactor(0).setDepth(9).setAlpha(0);
-                highlight.fillStyle(0xffffff, 0.07);
-                highlight.fillRoundedRect(panelX + 4, rowY - ROW_H / 2 + 2, panelW - 8, ROW_H - 4, 6);
-                this.scene.tweens.add({ targets: highlight, alpha: 1, duration: 300, delay });
-                this.resultElements.push(highlight);
+        for (let slot = 0; slot < VISIBLE_ROWS; slot++) {
+            const rowY  = cardTop + PAD_Y + slot * ROW_H + ROW_H / 2;
+            const delay = 650 + slot * 60;
+
+            const highlight = this.scene.add.graphics().setScrollFactor(0).setDepth(9).setAlpha(0);
+            this.resultElements.push(highlight);
+
+            const rankTxt = this.scene.add.text(panelX + PAD_X, rowY, '', {
+                fontFamily: 'BoldPixels', fontSize: 21, color: '#aaaaaa',
+            }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: rankTxt, alpha: 1, duration: 300, delay });
+            this.resultElements.push(rankTxt);
+
+            const starTxt = this.scene.add.text(panelX + PAD_X + 46, rowY, '', {
+                fontFamily: 'BoldPixels', fontSize: 21, color: '#ffdd44',
+            }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: starTxt, alpha: 1, duration: 300, delay });
+            this.resultElements.push(starTxt);
+
+            const nameTxt = this.scene.add.text(panelX + PAD_X + 70, rowY, '', {
+                fontFamily: 'BoldPixels', fontSize: 18, color: '#999999',
+            }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: nameTxt, alpha: 1, duration: 300, delay });
+            this.resultElements.push(nameTxt);
+
+            const scoreTxt = this.scene.add.text(panelX + panelW - PAD_X - 100, rowY, '', {
+                fontFamily: 'BoldPixels', fontSize: 20, color: '#cccccc',
+            }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: scoreTxt, alpha: 1, duration: 300, delay });
+            this.resultElements.push(scoreTxt);
+
+            const timeTxt = this.scene.add.text(panelX + panelW - PAD_X, rowY, '', {
+                fontFamily: 'BoldPixels', fontSize: 16, color: '#777777',
+            }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
+            this.scene.tweens.add({ targets: timeTxt, alpha: 1, duration: 300, delay });
+            this.resultElements.push(timeTxt);
+
+            slots.push({ highlight, rankTxt, starTxt, nameTxt, scoreTxt, timeTxt, rowY });
+        }
+
+        // ── Scroll arrows ─────────────────────────────────────────────────────
+        const arrowX    = panelX + panelW + 28;
+        const arrowUpY  = cardTop + panelH / 2 - 22;
+        const arrowDnY  = cardTop + panelH / 2 + 22;
+
+        const upBtn = this.scene.add.text(arrowX, arrowUpY, '▲', {
+            fontFamily: 'BoldPixels', fontSize: 22, color: '#444444',
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(12).setAlpha(0)
+          .setInteractive({ useHandCursor: true });
+        this.resultElements.push(upBtn);
+
+        const downBtn = this.scene.add.text(arrowX, arrowDnY, '▼', {
+            fontFamily: 'BoldPixels', fontSize: 22, color: '#ffffff',
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(12).setAlpha(0)
+          .setInteractive({ useHandCursor: true });
+        this.resultElements.push(downBtn);
+
+        // ── Page indicator ────────────────────────────────────────────────────
+        const pageIndicator = this.scene.add.text(cx, cardTop + panelH + 6, '', {
+            fontFamily: 'BoldPixels', fontSize: 13, color: '#555555', align: 'center',
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(10).setAlpha(0);
+        this.resultElements.push(pageIndicator);
+
+        // ── Slot renderer ─────────────────────────────────────────────────────
+        let scrollOffset = 0;
+
+        const updateArrows = () => {
+            upBtn.setColor(scrollOffset === 0 ? '#444444' : '#ffffff');
+            downBtn.setColor(scrollOffset >= maxScroll ? '#444444' : '#ffffff');
+        };
+
+        const renderSlots = (offset: number) => {
+            scrollOffset = offset;
+
+            for (let slot = 0; slot < VISIBLE_ROWS; slot++) {
+                const i     = offset + slot;
+                const entry = entries[i];
+                const { highlight, rankTxt, starTxt, nameTxt, scoreTxt, timeTxt, rowY } = slots[slot];
+                const isThisRun = thisRunRank !== null
+                    && (i + 1) === thisRunRank
+                    && entry?.score === thisRunScore
+                    && entry?.playerName === thisRunPlayerName;
+
+                rankTxt.setText(rankLabels[i] ?? `${i + 1}th`);
+                rankTxt.setColor(rankColors[i] ?? '#555555');
+
+                highlight.clear();
+                if (isThisRun) {
+                    highlight.fillStyle(0xffffff, 0.07);
+                    highlight.fillRoundedRect(panelX + 4, rowY - ROW_H / 2 + 2, panelW - 8, ROW_H - 4, 6);
+                }
+
+                if (!entry) {
+                    starTxt.setText('');
+                    nameTxt.setText('—').setColor('#444444');
+                    scoreTxt.setText('');
+                    timeTxt.setText('');
+                } else {
+                    starTxt.setText(isThisRun ? '*' : '');
+                    nameTxt.setText(entry.playerName).setColor(isThisRun ? '#ffcc66' : '#999999');
+                    scoreTxt.setText(entry.score.toLocaleString()).setColor(isThisRun ? '#ffffff' : '#cccccc');
+                    timeTxt.setText(formatTime(entry.duration)).setColor(isThisRun ? '#aaddff' : '#777777');
+                }
             }
 
-            // Rank pill
-            const rankColor = rankColors[i] ?? '#777777';
-            const rankText = this.scene.add.text(
-                panelX + PAD_X, rowY,
-                rankLabels[i] ?? `${i + 1}th`,
-                {
-                    fontFamily: 'BoldPixels',
-                    fontSize: 21,
-                    color: rankColor,
-                }
-            ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-            this.scene.tweens.add({ targets: rankText, alpha: 1, duration: 300, delay });
-            this.resultElements.push(rankText);
+            updateArrows();
 
-            if (!entry) {
-                // Empty slot
-                const emptyText = this.scene.add.text(
-                    panelX + PAD_X + 52, rowY, '—',
-                    { fontFamily: 'BoldPixels', fontSize: 18, color: '#444444' }
-                ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-                this.scene.tweens.add({ targets: emptyText, alpha: 1, duration: 300, delay });
-                this.resultElements.push(emptyText);
-                continue;
+            if (maxScroll > 0) {
+                const from = scrollOffset + 1;
+                const to   = Math.min(scrollOffset + VISIBLE_ROWS, totalEntries);
+                pageIndicator.setText(`${from}–${to} / ${totalEntries}`);
             }
+        };
 
-            // Current-run star marker
-            if (isThisRun) {
-                const star = this.scene.add.text(
-                    panelX + PAD_X + 46, rowY, '*',
-                    { fontFamily: 'BoldPixels', fontSize: 21, color: '#ffdd44' }
-                ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-                this.scene.tweens.add({ targets: star, alpha: 1, duration: 300, delay });
-                this.resultElements.push(star);
-            }
+        // Initial render
+        renderSlots(0);
 
-            // Player name
-            const nameLabel = this.scene.add.text(
-                panelX + PAD_X + 70, rowY,
-                entry.playerName,
-                {
-                    fontFamily: 'BoldPixels',
-                    fontSize: 18,
-                    color: isThisRun ? '#ffcc66' : '#999999',
-                }
-            ).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-            this.scene.tweens.add({ targets: nameLabel, alpha: 1, duration: 300, delay });
-            this.resultElements.push(nameLabel);
+        // Show scroll controls only when there are more than 5 entries
+        if (maxScroll > 0) {
+            this.scene.tweens.add({
+                targets: [upBtn, downBtn, pageIndicator],
+                alpha: 1, duration: 300, delay: 850,
+            });
 
-            // Score (center-right)
-            const scoreLabel = this.scene.add.text(
-                panelX + panelW - PAD_X - 100, rowY,
-                entry.score.toLocaleString(),
-                {
-                    fontFamily: 'BoldPixels',
-                    fontSize: 20,
-                    color: isThisRun ? '#ffffff' : '#cccccc',
-                }
-            ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-            this.scene.tweens.add({ targets: scoreLabel, alpha: 1, duration: 300, delay });
-            this.resultElements.push(scoreLabel);
+            upBtn.on('pointerdown', () => { if (scrollOffset > 0) renderSlots(scrollOffset - 1); });
+            downBtn.on('pointerdown', () => { if (scrollOffset < maxScroll) renderSlots(scrollOffset + 1); });
 
-            // Run time (right side)
-            const timeLabel = this.scene.add.text(
-                panelX + panelW - PAD_X, rowY,
-                formatTime(entry.duration),
-                {
-                    fontFamily: 'BoldPixels',
-                    fontSize: 16,
-                    color: isThisRun ? '#aaddff' : '#777777',
-                }
-            ).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11).setAlpha(0);
-            this.scene.tweens.add({ targets: timeLabel, alpha: 1, duration: 300, delay });
-            this.resultElements.push(timeLabel);
+            upBtn.on('pointerover', () => { if (scrollOffset > 0) upBtn.setColor('#ffcc66'); });
+            upBtn.on('pointerout',  () => updateArrows());
+            downBtn.on('pointerover', () => { if (scrollOffset < maxScroll) downBtn.setColor('#ffcc66'); });
+            downBtn.on('pointerout',  () => updateArrows());
+
+            this._wheelHandler = (_p: any, _g: any, _dx: any, dy: any) => {
+                if (dy > 0 && scrollOffset < maxScroll) renderSlots(scrollOffset + 1);
+                else if (dy < 0 && scrollOffset > 0)   renderSlots(scrollOffset - 1);
+            };
+            this.scene.input.on('wheel', this._wheelHandler);
         }
     }
 
@@ -746,6 +814,10 @@ export class UIManager {
         this._gameOverActive = false;
         this.gameOverText.setVisible(false);
         this.timerText.setVisible(true);
+        if (this._wheelHandler) {
+            this.scene.input.off('wheel', this._wheelHandler as (...args: any[]) => void);
+            this._wheelHandler = undefined;
+        }
         if (this.finalScoreText) { this.finalScoreText.destroy(); this.finalScoreText = undefined; }
         if (this.playAgainBtn) { this.playAgainBtn.destroy(); this.playAgainBtn = undefined; }
         if (this.menuBtn) { this.menuBtn.destroy(); this.menuBtn = undefined; }

@@ -5,7 +5,7 @@ export interface HighScoreEntry {
 }
 
 const STORAGE_KEY = 'drift_highscores_v2';
-const MAX_SCORES = 5;
+const MAX_SCORES = 10;
 
 function loadBoard(): HighScoreEntry[] {
     try {

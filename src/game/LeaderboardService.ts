@@ -50,7 +50,7 @@ export const LeaderboardService = {
      * Fetches the top N global scores, best first.
      * Ties broken by duration descending (longer run = higher rank).
      */
-    async getTopScores(limit = 5): Promise<LeaderboardEntry[]> {
+    async getTopScores(limit = 10): Promise<LeaderboardEntry[]> {
         const res = await fetch(
             `${BASE}?select=player_name,score,duration&order=score.desc,duration.desc&limit=${limit}`,
             { headers: hdrs() },
